@@ -51,7 +51,7 @@
 #include "hw/sh4/sh4_interpreter.h"
 #include "hw/sh4/dyna/ngen.h"
 
-#if defined(__SWITCH__) && defined(TICO_STANDALONE)
+#if defined(__SWITCH__) && defined(GBAStation_STANDALONE)
 #include "nswitch.h"
 #endif
 #include "oslib/i18n.h"
@@ -59,8 +59,8 @@
 settings_t settings;
 constexpr char const *BIOS_TITLE = "Dreamcast BIOS";
 
-#if defined(__SWITCH__) && defined(TICO_STANDALONE)
-static void setTicoStandaloneThreadAffinity(const char *name, s32 preferredCore)
+#if defined(__SWITCH__) && defined(GBAStation_STANDALONE)
+static void setGBAStationStandaloneThreadAffinity(const char *name, s32 preferredCore)
 {
 	u64 processMask = 0;
 	Result rc = svcGetInfo(&processMask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
@@ -1057,8 +1057,8 @@ void Emulator::start()
 		getSh4Executor()->Start();
 		threadResult = std::async(std::launch::async, [this] {
 				ThreadName _("Flycast-emu");
-#if defined(__SWITCH__) && defined(TICO_STANDALONE)
-				setTicoStandaloneThreadAffinity("Flycast-emu", 1);
+#if defined(__SWITCH__) && defined(GBAStation_STANDALONE)
+				setGBAStationStandaloneThreadAffinity("Flycast-emu", 1);
 #endif
 				InitAudio();
 

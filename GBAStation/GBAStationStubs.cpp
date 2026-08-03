@@ -1,5 +1,5 @@
-/// @file TicoStubs.cpp
-/// @brief Stub implementations for functions not needed in the tico overlay build
+/// @file GBAStationStubs.cpp
+/// @brief Stub implementations for functions not needed in the GBAStation overlay build
 /// These functions are declared but not used in libretro mode with USE_SDL
 
 #include <cerrno>

@@ -1,15 +1,15 @@
-#include "TicoTranslationManager.h"
+#include "GBAStationTranslationManager.h"
 #include "../../../core/deps/json/json.hpp"
 #include <fstream>
 
 using json = nlohmann::json;
 
-TicoTranslationManager& TicoTranslationManager::Instance() {
-    static TicoTranslationManager instance;
+GBAStationTranslationManager& GBAStationTranslationManager::Instance() {
+    static GBAStationTranslationManager instance;
     return instance;
 }
 
-bool TicoTranslationManager::Init() {
+bool GBAStationTranslationManager::Init() {
     std::string language = "English"; // default
     
     // Attempt to read language from general.jsonc
@@ -71,7 +71,7 @@ bool TicoTranslationManager::Init() {
     return true;
 }
 
-std::string TicoTranslationManager::GetString(const std::string& key) const {
+std::string GBAStationTranslationManager::GetString(const std::string& key) const {
     auto it = m_translations.find(key);
     if (it != m_translations.end()) {
         return it->second;
@@ -81,5 +81,5 @@ std::string TicoTranslationManager::GetString(const std::string& key) const {
 
 // Global helper
 std::string tr(const std::string& key) {
-    return TicoTranslationManager::Instance().GetString(key);
+    return GBAStationTranslationManager::Instance().GetString(key);
 }

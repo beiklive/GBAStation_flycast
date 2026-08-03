@@ -1,7 +1,7 @@
-/// @file TicoChainload.cpp
-#include "TicoChainload.h"
+/// @file GBAStationChainload.cpp
+#include "GBAStationChainload.h"
 
-#include "TicoConfig.h"
+#include "GBAStationConfig.h"
 
 #include <cstdio>
 #include <string>
@@ -12,7 +12,7 @@
 #include <switch/runtime/env.h>
 #endif
 
-namespace Tico
+namespace GBAStation
 {
 namespace
 {
@@ -65,4 +65,4 @@ void ChainloadLauncher(const LogCallback &log)
 #endif
 }
 
-}  // namespace Tico
+}  // namespace GBAStation

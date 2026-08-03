@@ -4,25 +4,25 @@
 <img src="https://i.imgur.com/8qsV6MH.png" width="200">  
 </picture>  
 
-*Part of the Tico ecosystem* — https://www.ticoverse.com
+*Part of the GBAStation ecosystem* — https://www.GBAStationverse.com
 
 **Flycast** is a widely used emulator for the Sega Dreamcast, NAOMI, Atomiswave, and other related arcade systems, known for its accuracy, performance, and active development.
 
-This port is exclusive to Tico, adapted to work with its frontend and runtime, and provided as a standalone build for the Nintendo Switch. It focuses on integration, consistency, and predictable behavior within the Tico ecosystem.
+This port is exclusive to GBAStation, adapted to work with its frontend and runtime, and provided as a standalone build for the Nintendo Switch. It focuses on integration, consistency, and predictable behavior within the GBAStation ecosystem.
 
 ----------
 
 ## Summary
 
-This port focuses on making Flycast fit naturally within Tico, rather than behaving as a separate application.
+This port focuses on making Flycast fit naturally within GBAStation, rather than behaving as a separate application.
 
 It adds:
 
--   Custom overlay matching Tico design, including time, date, user avatar, and game title
+-   Custom overlay matching GBAStation design, including time, date, user avatar, and game title
 -   Explicit control over display (integer scaling and aspect ratios)
 -   Runtime-selectable rendering filters
 -   Built-in save and load state support
--   Controller mapping aligned with Tico input conventions, including VMU and arcade stick emulation
+-   Controller mapping aligned with GBAStation input conventions, including VMU and arcade stick emulation
 
 ----------
 

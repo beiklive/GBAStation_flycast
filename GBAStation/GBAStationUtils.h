@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 
-namespace TicoUtils {
+namespace GBAStationUtils {
 
     // Helper to trim whitespace
     static inline std::string Trim(const std::string& str) {

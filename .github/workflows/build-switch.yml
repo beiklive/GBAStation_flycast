@@ -1,0 +1,73 @@
+name: Build GBAStation Flycast for Nintendo Switch
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-switch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Check out Flycast source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install Switch and switchVK dependencies
+        shell: bash
+        env:
+          SWITCHVK_TOKEN: ${{ secrets.SWITCHVK_READ_TOKEN }}
+        run: |
+          dkp-pacman -S --noconfirm --needed switch-dev switch-curl
+          if [[ -n "${SWITCHVK_TOKEN}" ]]; then
+            git clone --depth=1 "https://x-access-token:${SWITCHVK_TOKEN}@github.com/beiklive/switchVK.git" "$GITHUB_WORKSPACE/../switchVK"
+          else
+            git clone --depth=1 https://github.com/beiklive/switchVK.git "$GITHUB_WORKSPACE/../switchVK"
+          fi
+          bash "$GITHUB_WORKSPACE/../switchVK/ci/install-linux-deps.sh"
+
+      - name: Prepare switchVK build inputs
+        shell: bash
+        run: |
+          SWITCHVK_CI_BUILD_ROOT="$GITHUB_WORKSPACE/../switchVK/.ci-build" \
+          MESA_26_1_4_PACKAGE="$GITHUB_WORKSPACE/../switchVK/nvk-switch-26.1.4" \
+            bash "$GITHUB_WORKSPACE/../switchVK/ci/build-sdk-linux.sh"
+
+      - name: Build release NRO
+        shell: bash
+        run: |
+          chmod +x build_local.sh build_flycast_nro.sh
+          SWITCH_NVK_ROOT="$GITHUB_WORKSPACE/../switchVK/nvk-switch-26.1.4" \
+            bash build_local.sh --clean -j "$(nproc)"
+          test -s GBAStationFlycastStub.nro
+          sha256sum GBAStationFlycastStub.nro > GBAStationFlycastStub.nro.sha256
+
+      - name: Upload Nintendo Switch build
+        uses: actions/upload-artifact@v4
+        with:
+          name: GBAStation-Flycast-Switch-${{ github.sha }}
+          path: |
+            GBAStationFlycastStub.nro
+            GBAStationFlycastStub.nro.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            GBAStationFlycastStub.nro
+            GBAStationFlycastStub.nro.sha256

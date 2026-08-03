@@ -1,10 +1,10 @@
-/// @file TicoConfig.h
-/// @brief Minimal hardcoded configuration for tico overlay
+/// @file GBAStationConfig.h
+/// @brief Minimal hardcoded configuration for GBAStation overlay
 #pragma once
 
 #include <string>
 
-namespace TicoConfig {
+namespace GBAStationConfig {
     // Hardcoded test ROM for easy testing
     constexpr const char* TEST_ROM = "sdmc:/GBAStation/DC/roms/Sonic Adventure (USA).cue";
     
@@ -29,15 +29,15 @@ namespace TicoConfig {
     // true  = SDL_QueueAudio (Push model). Used on Flycast: the DC+Vulkan load
     //         starves the SDL_mixer pull-callback in Callback mode, causing
     //         choppy game audio. The RA trophy chime is mixed into this queue
-    //         manually by TicoAudio (no second device, which the Switch can't do).
+    //         manually by GBAStationAudio (no second device, which the Switch can't do).
     // false = Mix_HookMusic + RingBuffer (Callback model, used by lighter cores).
     constexpr bool USE_SDLQUEUEAUDIO = true;
 }
 
-// Emulator-agnostic paths consumed by the generic Tico layer (Tico::Main,
-// Tico::ChainloadLauncher). Core-specific subpaths (dc states/saves/system)
-// stay in TicoConfig above and remain a flycast concern.
-namespace Tico { namespace Paths {
+// Emulator-agnostic paths consumed by the generic GBAStation layer (GBAStation::Main,
+// GBAStation::ChainloadLauncher). Core-specific subpaths (dc states/saves/system)
+// stay in GBAStationConfig above and remain a flycast concern.
+namespace GBAStation { namespace Paths {
     constexpr const char* Root              = "sdmc:/GBAStation";
     constexpr const char* Debug             = "sdmc:/GBAStation/debug";
     constexpr const char* Assets            = "sdmc:/GBAStation/DC/assets";
@@ -50,7 +50,7 @@ namespace Tico { namespace Paths {
     constexpr const char* LauncherNroFallback = "sdmc:/GBAStation/GBAStation.nro";
     constexpr const char* DefaultTitleFont       = "romfs:/fonts/font.ttf";
     constexpr const char* DefaultDescriptionFont = "romfs:/fonts/description.ttf";
-}}  // namespace Tico::Paths
+}}  // namespace GBAStation::Paths
 
 // UI Actions for HelpersBar
 enum UIActions {

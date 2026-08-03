@@ -3,15 +3,15 @@
 #include <string>
 #include <unordered_map>
 
-class TicoTranslationManager {
+class GBAStationTranslationManager {
 public:
-    static TicoTranslationManager& Instance();
+    static GBAStationTranslationManager& Instance();
 
     bool Init();
     std::string GetString(const std::string& key) const;
 
 private:
-    TicoTranslationManager() = default;
+    GBAStationTranslationManager() = default;
     
     std::string m_currentLanguage;
     std::unordered_map<std::string, std::string> m_translations;

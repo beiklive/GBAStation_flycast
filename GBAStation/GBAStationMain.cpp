@@ -1,12 +1,12 @@
-/// @file TicoMain.cpp
-/// @brief Emulator-agnostic Tico driver: Switch platform bring-up, the frame
-/// loop, and libnx pad → FrameInput polling. Drives a Tico::CoreRuntime and
-/// knows nothing about flycast/libretro/SDL. Mirrors tico-ppsspp's TicoMain.cpp.
+/// @file GBAStationMain.cpp
+/// @brief Emulator-agnostic GBAStation driver: Switch platform bring-up, the frame
+/// loop, and libnx pad → FrameInput polling. Drives a GBAStation::CoreRuntime and
+/// knows nothing about flycast/libretro/SDL. Mirrors GBAStation-ppsspp's GBAStationMain.cpp.
 
-#include "TicoMain.h"
+#include "GBAStationMain.h"
 
-#include "TicoChainload.h"
-#include "TicoConfig.h"
+#include "GBAStationChainload.h"
+#include "GBAStationConfig.h"
 
 #include <cstdarg>
 #include <algorithm>
@@ -25,7 +25,7 @@
 #include <switch.h>
 #endif
 
-namespace Tico
+namespace GBAStation
 {
 
 namespace
@@ -198,9 +198,13 @@ uint64_t MapButtons(u64 hid)
     if (BindingHeld("dc.handle.start", "PAD_START", hid)) b |= Pad_Start;
     if (BindingHeld("dc.handle.select", "PAD_BACK", hid)) b |= Pad_Select;
 
-    // Synthesize Guide from Plus+Minus so the overlay toggle / exit combo works.
-    if ((b & Pad_Start) && (b & Pad_Select))
+    // Frontend actions must use their own config keys.  Deriving the menu
+    // hotkey from mapped Start/Select made the original Flycast shortcut win
+    // whenever a user changed the launcher mapping.
+    if (BindingHeld("dc.hotkey.menu.pad", "PAD_START+PAD_BACK", hid))
         b |= Pad_Guide;
+    if (BindingHeld("dc.handle.fastforward", "PAD_LSB", hid))
+        b |= Pad_FastForward;
     return b;
 }
 #endif
@@ -256,20 +260,20 @@ int Main::Run(int argc, char **argv)
     if (!InitPlatform())
         return 1;
 
-    Log("tico main start core=%s argc=%d content=%s", runtime_.Name(), argc,
+    Log("GBAStation main start core=%s argc=%d content=%s", runtime_.Name(), argc,
         launch.contentPath.empty() ? "(default)" : launch.contentPath.c_str());
 
     bool started = runtime_.Configure(launch) && runtime_.Initialize(launch) &&
                    runtime_.LoadContent(launch.contentPath);
     if (!started)
     {
-        Log("tico main init failed core=%s", runtime_.Name());
+        Log("GBAStation main init failed core=%s", runtime_.Name());
         runtime_.Shutdown();
         ShutdownPlatform();
         return 1;
     }
 
-    Log("tico main loop enter core=%s", runtime_.Name());
+    Log("GBAStation main loop enter core=%s", runtime_.Name());
     while (!runtime_.ShouldExit())
     {
 #ifdef __SWITCH__
@@ -281,7 +285,7 @@ int Main::Run(int argc, char **argv)
         runtime_.RunFrame();
         runtime_.RenderFrame();
     }
-    Log("tico main loop exit core=%s", runtime_.Name());
+    Log("GBAStation main loop exit core=%s", runtime_.Name());
 
     const bool chainload = runtime_.ShouldChainloadLauncher();
     runtime_.Shutdown();
@@ -400,4 +404,4 @@ void Main::Log(const char *fmt, ...) const
     log_(buffer);
 }
 
-}  // namespace Tico
+}  // namespace GBAStation

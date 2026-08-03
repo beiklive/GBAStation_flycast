@@ -21,6 +21,7 @@ core/deps/glslang/
 compile_commands.json
 CMakeUserPresets.json
 
-build_tico
-build_tico_standalone
-tico-flycast-standalone.nro
+build_GBAStation
+build_GBAStation_standalone
+GBAStation-flycast-standalone.nro
+GBAStationFlycastStub.nro

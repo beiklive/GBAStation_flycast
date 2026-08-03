@@ -1,20 +1,20 @@
-/// @file TicoMain.h
-/// @brief Emulator-agnostic Tico driver and core-runtime interface.
+/// @file GBAStationMain.h
+/// @brief Emulator-agnostic GBAStation driver and core-runtime interface.
 ///
-/// Mirrors tico-ppsspp/tico/TicoMain.h: `Tico::Main` owns the Switch platform
+/// Mirrors GBAStation-ppsspp/GBAStation/GBAStationMain.h: `GBAStation::Main` owns the Switch platform
 /// bring-up, the frame loop, and libnx pad polling, and drives an opaque
-/// `Tico::CoreRuntime`. The only emulator-specific code lives behind that
+/// `GBAStation::CoreRuntime`. The only emulator-specific code lives behind that
 /// interface (FlycastRuntime for the libretro path). This header pulls in no
 /// flycast/libretro/SDL types so it can back any core; input here is libnx pad
 /// only.
 #pragma once
 
-#include "TicoLogger.h"
+#include "GBAStationLogger.h"
 
 #include <cstdint>
 #include <string>
 
-namespace Tico
+namespace GBAStation
 {
 
 constexpr unsigned MaxPlayers = 4;
@@ -30,7 +30,7 @@ struct LaunchInfo
 
 /// Core-agnostic controller buttons, positional like SDL (A=south, B=east,
 /// X=west, Y=north) so consumers written against the SDL libretro path keep
-/// working. Tico::Main maps libnx HidNpadButton into these.
+/// working. GBAStation::Main maps libnx HidNpadButton into these.
 enum PadButton : uint64_t
 {
     Pad_A      = 1ull << 0,  // south
@@ -49,7 +49,10 @@ enum PadButton : uint64_t
     Pad_R3     = 1ull << 13,
     Pad_Start  = 1ull << 14, // Plus
     Pad_Select = 1ull << 15, // Minus
-    Pad_Guide  = 1ull << 16, // synthesized from Start+Select
+    // These two virtual bits are intentionally separate from the emulated
+    // controller.  They carry GBAStation's configurable frontend hotkeys.
+    Pad_Guide  = 1ull << 16, // menu hotkey
+    Pad_FastForward = 1ull << 17,
 };
 
 /// One frame's worth of neutralized input. `pressed`/`released` are the edges
@@ -127,4 +130,4 @@ private:
 /// overlay.
 float OverlayModeScale();
 
-}  // namespace Tico
+}  // namespace GBAStation

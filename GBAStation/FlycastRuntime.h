@@ -1,13 +1,13 @@
 /// @file FlycastRuntime.h
-/// @brief Flycast/libretro implementation of Tico::CoreRuntime.
+/// @brief Flycast/libretro implementation of GBAStation::CoreRuntime.
 ///
-/// Owns the libretro driver (TicoCore), the Vulkan host (TicoVulkan), SDL audio
-/// (TicoAudio), and the overlay. All flycast-specific orchestration that used
-/// to live in the monolithic TicoMain.cpp lives here, behind the agnostic
-/// CoreRuntime interface that Tico::Main drives.
+/// Owns the libretro driver (GBAStationCore), the Vulkan host (GBAStationVulkan), SDL audio
+/// (GBAStationAudio), and the overlay. All flycast-specific orchestration that used
+/// to live in the monolithic GBAStationMain.cpp lives here, behind the agnostic
+/// CoreRuntime interface that GBAStation::Main drives.
 #pragma once
 
-#include "TicoMain.h"
+#include "GBAStationMain.h"
 
 #include <SDL.h>
 
@@ -15,11 +15,11 @@
 #include <memory>
 #include <string>
 
-class TicoCore;
-class TicoOverlay;
-class TicoAudio;
+class GBAStationCore;
+class GBAStationOverlay;
+class GBAStationAudio;
 
-namespace Tico
+namespace GBAStation
 {
 
 class FlycastOverlayHost;  // libretro IOverlayHost adapter (defined in the .cpp)
@@ -50,16 +50,17 @@ private:
     void ApplyCoreInput(const FrameInput &input);
 
     LogCallback log_;
-    std::unique_ptr<TicoCore> core_;
-    std::unique_ptr<TicoOverlay> overlay_;
+    std::unique_ptr<GBAStationCore> core_;
+    std::unique_ptr<GBAStationOverlay> overlay_;
     std::unique_ptr<FlycastOverlayHost> overlayHost_;
-    std::unique_ptr<TicoAudio> audio_;
+    std::unique_ptr<GBAStationAudio> audio_;
     SDL_AudioDeviceID audioDevice_ = 0;
 
     bool overlayReady_ = false;
     bool exitRequested_ = false;
     bool chainload_ = false;
     bool frameInFlight_ = false;
+    bool fastForward_ = false;
     std::string romPath_;
     std::string titleArg_;     // Display title from the launcher (argv[2])
     bool isArcade_ = false;    // NAOMI / Atomiswave (directionals -> analog axis)
@@ -67,4 +68,4 @@ private:
     float overlayBaseFontScale_ = 1.0f;
 };
 
-}  // namespace Tico
+}  // namespace GBAStation

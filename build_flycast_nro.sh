@@ -4,7 +4,7 @@ set -e
 # Setup paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLYCAST_DIR="$SCRIPT_DIR"
-BUILD_DIR="$FLYCAST_DIR/build_tico"
+BUILD_DIR="$FLYCAST_DIR/build_GBAStation"
 export TMPDIR="${SCRIPT_DIR}/.codex_tmp/msys_tmp"
 export TMP="${TMPDIR}"
 export TEMP="${TMPDIR}"
@@ -47,15 +47,15 @@ fi
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-# Configure for Switch with the tico Vulkan frontend.
-# LIBRETRO=ON enables libretro core building, USE_TICO=ON wires in the
-# tico-flycast.nro target. USE_VULKAN is forced ON inside CMakeLists.txt
+# Configure for Switch with the GBAStation Vulkan frontend.
+# LIBRETRO=ON enables libretro core building, USE_GBAStation=ON wires in the
+# GBAStation-flycast.nro target. USE_VULKAN is forced ON inside CMakeLists.txt
 # for this combination — no need to pass it here.
 cmake "${CMAKE_GENERATOR_ARGS[@]}" "$FLYCAST_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
     -DPLATFORM=libnx \
     -DLIBRETRO=ON \
-    -DUSE_TICO=ON \
+    -DUSE_GBAStation=ON \
     -DNINTENDO_SWITCH=ON \
     -DARCHITECTURE=arm64 \
     -DMESA_NVK_DIR="$MESA_NVK_DIR" \
@@ -64,7 +64,7 @@ cmake "${CMAKE_GENERATOR_ARGS[@]}" "$FLYCAST_DIR" \
 
 # Build
 echo "Running build..."
-cmake --build . -j$(nproc)
+cmake --build . -j"${CMAKE_BUILD_PARALLEL_LEVEL:-$(nproc)}"
 
 echo ""
 echo "=== Build Complete ==="
@@ -73,8 +73,8 @@ echo "=== Build Complete ==="
 NRO_FILE=""
 if [ -f "GBAStationFlycastStub.nro" ]; then
     NRO_FILE="GBAStationFlycastStub.nro"
-elif [ -f "tico-flycast.nro" ]; then
-    NRO_FILE="tico-flycast.nro"
+elif [ -f "GBAStation-flycast.nro" ]; then
+    NRO_FILE="GBAStation-flycast.nro"
 elif [ -f "flycast_libretro.nro" ]; then
     NRO_FILE="flycast_libretro.nro"
 fi

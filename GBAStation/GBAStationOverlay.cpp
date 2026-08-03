@@ -1,5 +1,5 @@
-/// @file TicoOverlay.cpp
-/// @brief Overlay UI for tico-integrated Flycast
+/// @file GBAStationOverlay.cpp
+/// @brief Overlay UI for GBAStation-integrated Flycast
 /// Based on EmulatorScreen overlay rendering
 
 // The overlay uses ImVec2 math operators. The libretro target defines this as a
@@ -9,9 +9,9 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #endif
 
-#include "TicoOverlay.h"
-#include "TicoConfig.h"
-#include "TicoTranslationManager.h"
+#include "GBAStationOverlay.h"
+#include "GBAStationConfig.h"
+#include "GBAStationTranslationManager.h"
 #include <algorithm>
 #include <cmath>
 #include <dirent.h>
@@ -97,7 +97,7 @@ static std::string ReadGBAStationConfigValue(const char *key)
 #endif
 
 // Nanosvg for vector icons. Backend-agnostic now: the overlay decodes to RGBA
-// and uploads through IOverlayHost::CreateTextureRGBA (TicoVulkan on libretro,
+// and uploads through IOverlayHost::CreateTextureRGBA (GBAStationVulkan on libretro,
 // imguiDriver on the standalone), so there is no GL/Vulkan #ifdef here.
 #define NANOSVG_IMPLEMENTATION
 #include "deps/nanosvg/nanosvg.h"
@@ -105,7 +105,7 @@ static std::string ReadGBAStationConfigValue(const char *key)
 #include "deps/nanosvg/nanosvgrast.h"
 
 // Save-state slot handling now lives behind IOverlayHost (libretro builds a
-// per-ROM .state path + calls TicoCore; the standalone uses flycast's native
+// per-ROM .state path + calls GBAStationCore; the standalone uses flycast's native
 // save states), so the overlay no longer constructs paths itself.
 
 //==============================================================================
@@ -147,7 +147,7 @@ namespace UIStyle
 // Construction
 //==============================================================================
 
-TicoOverlay::TicoOverlay()
+GBAStationOverlay::GBAStationOverlay()
 {
     m_gameTitle = "Flycast";
     LoadConfig();
@@ -155,19 +155,19 @@ TicoOverlay::TicoOverlay()
     LoadAccountData(); // Load custom avatar/account data
 
     LoadCoreSettings();
-    TicoTranslationManager::Instance().Init();
+    GBAStationTranslationManager::Instance().Init();
 
 #ifdef __SWITCH__
     psmInitialize();
 #endif
 }
 
-TicoOverlay::~TicoOverlay()
+GBAStationOverlay::~GBAStationOverlay()
 {
     ReleaseAvatarTexture();
 }
 
-void TicoOverlay::ReleaseAvatarTexture()
+void GBAStationOverlay::ReleaseAvatarTexture()
 {
     if (m_avatarTexture && m_host)
         m_host->DestroyTexture(m_avatarTexture);
@@ -176,7 +176,7 @@ void TicoOverlay::ReleaseAvatarTexture()
     m_avatarHeight = 0;
 }
 
-bool TicoOverlay::LoadAvatarTextureFromMemory(const unsigned char *data, size_t size, const char * /*tag*/)
+bool GBAStationOverlay::LoadAvatarTextureFromMemory(const unsigned char *data, size_t size, const char * /*tag*/)
 {
     if (!data || size == 0)
         return false;
@@ -204,7 +204,7 @@ bool TicoOverlay::LoadAvatarTextureFromMemory(const unsigned char *data, size_t 
     return true;
 }
 
-bool TicoOverlay::LoadAvatarTextureFromFile(const char *path)
+bool GBAStationOverlay::LoadAvatarTextureFromFile(const char *path)
 {
     if (!path)
         return false;
@@ -231,11 +231,11 @@ bool TicoOverlay::LoadAvatarTextureFromFile(const char *path)
     return true;
 }
 
-void TicoOverlay::LoadConfig()
+void GBAStationOverlay::LoadConfig()
 {
     const char *configPaths[] = {
         "sdmc:/GBAStation/config/display.jsonc",
-        "tico/config/display.jsonc",
+        "GBAStation/config/display.jsonc",
         "assets/config/display.jsonc",
         "../assets/config/display.jsonc"};
 
@@ -298,11 +298,11 @@ void TicoOverlay::LoadConfig()
     }
 }
 
-void TicoOverlay::LoadGeneralConfig()
+void GBAStationOverlay::LoadGeneralConfig()
 {
     const char *configPaths[] = {
         "sdmc:/GBAStation/config/general.jsonc",
-        "tico/config/general.jsonc",
+        "GBAStation/config/general.jsonc",
         "assets/config/general.jsonc",
         "../assets/config/general.jsonc"};
 
@@ -347,7 +347,7 @@ void TicoOverlay::LoadGeneralConfig()
     }
 }
 
-void TicoOverlay::LoadAccountData()
+void GBAStationOverlay::LoadAccountData()
 {
     m_nickname = "Player 1";
 
@@ -420,9 +420,9 @@ void TicoOverlay::LoadAccountData()
     accountExit();
 #else
     const char *const avatarPaths[] = {
-        "tico/assets/avatar.jpg",
-        "tico/assets/avatar.jpeg",
-        "tico/assets/avatar.png",
+        "GBAStation/assets/avatar.jpg",
+        "GBAStation/assets/avatar.jpeg",
+        "GBAStation/assets/avatar.png",
         "assets/images/avatar.jpg",
         "assets/images/avatar.jpeg",
         "assets/images/avatar.png",
@@ -439,7 +439,7 @@ void TicoOverlay::LoadAccountData()
 // Update
 //==============================================================================
 
-void TicoOverlay::Update(float deltaTime)
+void GBAStationOverlay::Update(float deltaTime)
 {
     // Pre-load RA icon texture BEFORE rendering (GL-safe: outside ImGui frame)
     EnsureRAIconLoaded();
@@ -482,7 +482,7 @@ void TicoOverlay::Update(float deltaTime)
 // Show/Hide
 //==============================================================================
 
-void TicoOverlay::Show()
+void GBAStationOverlay::Show()
 {
     if (m_currentMenu == OverlayMenu::None)
     {
@@ -496,7 +496,7 @@ void TicoOverlay::Show()
     }
 }
 
-void TicoOverlay::Hide()
+void GBAStationOverlay::Hide()
 {
     m_currentMenu = OverlayMenu::None;
 }
@@ -505,7 +505,7 @@ void TicoOverlay::Hide()
 // Rendering
 //==============================================================================
 
-void TicoOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, float aspectRatio,
+void GBAStationOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, float aspectRatio,
                          int frameWidth, int frameHeight, int fboWidth, int fboHeight)
 {
     ImDrawList *bgDrawList = ImGui::GetBackgroundDrawList();
@@ -547,7 +547,7 @@ void TicoOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, float asp
     RenderRAAlerts(fgDrawList, displaySize, ImGui::GetIO().DeltaTime);
 }
 
-void TicoOverlay::RenderSocialArea(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderSocialArea(ImDrawList *dl, ImVec2 displaySize)
 {
     if (m_animTimer <= 0.0f)
         return;
@@ -615,7 +615,7 @@ void TicoOverlay::RenderSocialArea(ImDrawList *dl, ImVec2 displaySize)
     }
 }
 
-void TicoOverlay::GetGameViewport(float screenW, float screenH, float coreAspect,
+void GBAStationOverlay::GetGameViewport(float screenW, float screenH, float coreAspect,
                                   float &outX, float &outY, float &outW, float &outH) const
 {
     // Dreamcast base resolution (most common mode) — mirrors RenderGame().
@@ -691,7 +691,7 @@ void TicoOverlay::GetGameViewport(float screenW, float screenH, float coreAspect
     outY = (screenH - dstHeight) / 2.0f;
 }
 
-void TicoOverlay::RenderGame(ImDrawList *dl, ImVec2 displaySize, unsigned int texture,
+void GBAStationOverlay::RenderGame(ImDrawList *dl, ImVec2 displaySize, unsigned int texture,
                              float aspectRatio, int width, int height,
                              int fboWidth, int fboHeight)
 {
@@ -824,7 +824,7 @@ void TicoOverlay::RenderGame(ImDrawList *dl, ImVec2 displaySize, unsigned int te
 #endif
 }
 
-void TicoOverlay::RenderOverlayBackground(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderOverlayBackground(ImDrawList *dl, ImVec2 displaySize)
 {
     // Animation ease
     float t = m_animTimer / 0.4f;
@@ -852,19 +852,19 @@ void TicoOverlay::RenderOverlayBackground(ImDrawList *dl, ImVec2 displaySize)
         ImU32 colBase = IM_COL32(0, 0, 0, baseAlpha);
 
         // Top Band
-        dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(displaySize.x, topH),
+        dl->AddRectFilledMulGBAStationlor(ImVec2(0, 0), ImVec2(displaySize.x, topH),
                                     colMax, colMax, colBase, colBase);
 
         // Center Band
         dl->AddRectFilled(ImVec2(0, topH), ImVec2(displaySize.x, topH + centerH), colBase);
 
         // Bottom Band
-        dl->AddRectFilledMultiColor(ImVec2(0, displaySize.y - botH), ImVec2(displaySize.x, displaySize.y),
+        dl->AddRectFilledMulGBAStationlor(ImVec2(0, displaySize.y - botH), ImVec2(displaySize.x, displaySize.y),
                                     colBase, colBase, colMax, colMax);
     }
 }
 
-void TicoOverlay::RenderTitleCard(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderTitleCard(ImDrawList *dl, ImVec2 displaySize)
 {
     if (m_animTimer <= 0.0f)
         return;
@@ -955,125 +955,72 @@ void TicoOverlay::RenderTitleCard(ImDrawList *dl, ImVec2 displaySize)
     }
 }
 
-void TicoOverlay::RenderQuickMenu(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderQuickMenu(ImDrawList *dl, ImVec2 displaySize)
 {
     float scale = OverlayScale();
-    const float menuWidth = 400.0f * scale;
-
-    std::string menuItems[] = {
+    const std::string menuItems[] = {
+        tr("emulator_resume"),
         tr("emulator_save_state"),
         tr("emulator_load_state"),
-        tr("emulator_settings"),
+        tr("emulator_cheats"),
+        tr("emulator_video_settings"),
+        tr("emulator_core_settings"),
+        tr("emulator_reset"),
         tr("emulator_exit_game")};
-    const int numItems = 4;
+    const std::string descriptions[] = {
+        "Return to the current game.",
+        "Create a restore point for the current game.",
+        "Resume from an existing restore point.",
+        "Manage game cheat settings.",
+        "Configure display scaling and aspect ratio.",
+        "Configure Flycast core options.",
+        "Restart the current game.",
+        "Return to GBAStation."};
+    constexpr int numItems = 8;
 
-    const float itemHeight = 64.0f * scale;
-    const float contentHeight = numItems * itemHeight; // Flush
-
-    ImVec2 menuSize(menuWidth, contentHeight);
-
-    // Animation: Slide from bottom
     float t = m_animTimer / 0.4f;
     if (t > 1.0f)
         t = 1.0f;
     float easeOut = 1.0f - std::pow(1.0f - t, 3.0f);
-
-    float targetY = (displaySize.y - menuSize.y) / 2.0f;
-    float startY = displaySize.y + (100.0f * scale);
-    float currentY = startY + (targetY - startY) * easeOut;
-
-    ImVec2 menuPos((displaySize.x - menuSize.x) / 2, currentY);
-    ImVec2 p0 = menuPos;
-    ImVec2 p1 = ImVec2(menuPos.x + menuSize.x, menuPos.y + menuSize.y);
-
-    const float cornerRadius = 16.0f * scale;
-
-    // Opaque Background (Neumorphic)
-    ImU32 containerColor;
-    if (m_isDarkMode)
-    {
-        containerColor = IM_COL32(45, 45, 45, (int)(255 * easeOut));
-    }
-    else
-    {
-        containerColor = IM_COL32(242, 245, 248, (int)(255 * easeOut));
-    }
-
-    dl->AddRectFilled(p0, p1, containerColor, cornerRadius);
-
-    // No Border, No Shadow
-
     ImFont *font = ImGui::GetFont();
-    float baseFontSize = ImGui::GetFontSize();
-    float smallFontSize = baseFontSize * 0.85f;
+    const float labelSize = ImGui::GetFontSize() * 0.78f;
+    const float titleSize = ImGui::GetFontSize() * 1.12f;
+    const float width = std::min(displaySize.x - 100.0f * scale, 1030.0f * scale);
+    const float height = std::min(displaySize.y - 150.0f * scale, 530.0f * scale);
+    const ImVec2 origin((displaySize.x - width) * 0.5f,
+                        (displaySize.y - height) * 0.5f + (1.0f - easeOut) * 90.0f * scale);
+    const ImVec2 end(origin.x + width, origin.y + height);
+    const float sidebarWidth = std::min(300.0f * scale, width * 0.32f);
+    const float itemHeight = (height - 32.0f * scale) / numItems;
 
-    // Items
+    dl->AddRectFilled(origin, end, IM_COL32(14, 23, 28, (int)(248 * easeOut)), 6.0f * scale);
+    dl->AddRectFilled(origin, ImVec2(origin.x + sidebarWidth, end.y),
+                      IM_COL32(18, 48, 52, (int)(255 * easeOut)), 6.0f * scale,
+                      ImDrawFlags_RoundCornersLeft);
     for (int i = 0; i < numItems; i++)
     {
         bool isSelected = (m_quickMenuSelection == i);
-        float itemY = menuPos.y + i * itemHeight;
-        float inset = 0.0f; // Flush
-        ImVec2 itemMin(menuPos.x + inset, itemY);
-        ImVec2 itemMax(menuPos.x + menuSize.x - inset, itemY + itemHeight);
-
-        // Selection highlight
+        ImVec2 itemMin(origin.x + 12.0f * scale, origin.y + 16.0f * scale + i * itemHeight);
+        ImVec2 itemMax(origin.x + sidebarWidth - 12.0f * scale, itemMin.y + itemHeight - 4.0f * scale);
         if (isSelected)
-        {
-            ImDrawFlags corners = 0;
-            float itemRadius = 0.0f; // Use corner radius if handled by flag, else 0
-            if (i == 0)
-            {
-                corners = ImDrawFlags_RoundCornersTop;
-                itemRadius = cornerRadius;
-            }
-            else if (i == numItems - 1)
-            {
-                corners = ImDrawFlags_RoundCornersBottom;
-                itemRadius = cornerRadius;
-            }
-
-            ImU32 selectedColor;
-            if (m_isDarkMode)
-            {
-                selectedColor = IM_COL32(60, 60, 60, (int)(255 * easeOut));
-            }
-            else
-            {
-                // Light Mode Selected: Darker Grey/White (220, 224, 228) for visibility
-                selectedColor = IM_COL32(190, 195, 205, (int)(255 * easeOut));
-            }
-
-            dl->AddRectFilled(itemMin, itemMax, selectedColor, itemRadius, corners);
-        }
-
-        // No Dividers
-
-        // Text
-        ImVec2 textSize = font->CalcTextSizeA(smallFontSize, FLT_MAX, 0.0f, menuItems[i].c_str());
-        float textX = itemMin.x + 20.0f * scale;
-        float textY = itemMin.y + (itemHeight - textSize.y) / 2;
-
-        ImU32 textColor;
-        if (m_isDarkMode)
-        {
-            if (isSelected)
-                textColor = IM_COL32(255, 255, 255, (int)(255 * easeOut));
-            else
-                textColor = IM_COL32(200, 200, 200, (int)(255 * easeOut));
-        }
-        else
-        {
-            if (isSelected)
-                textColor = IM_COL32(60, 60, 70, (int)(255 * easeOut));
-            else
-                textColor = IM_COL32(90, 90, 100, (int)(255 * easeOut));
-        }
-
-        dl->AddText(font, smallFontSize, ImVec2(textX, textY), textColor, menuItems[i].c_str());
+            dl->AddRectFilled(itemMin, itemMax, IM_COL32(15, 142, 122, (int)(235 * easeOut)), 4.0f * scale);
+        const ImVec2 textSize = font->CalcTextSizeA(labelSize, FLT_MAX, 0.0f, menuItems[i].c_str());
+        dl->AddText(font, labelSize, ImVec2(itemMin.x + 18.0f * scale, itemMin.y + (itemHeight - textSize.y) * 0.5f),
+                    isSelected ? IM_COL32(255, 255, 255, (int)(255 * easeOut))
+                               : IM_COL32(205, 212, 220, (int)(235 * easeOut)), menuItems[i].c_str());
     }
+
+    const float contentX = origin.x + sidebarWidth + 48.0f * scale;
+    dl->AddText(font, titleSize, ImVec2(contentX, origin.y + 72.0f * scale),
+                IM_COL32(255, 255, 255, (int)(255 * easeOut)), menuItems[m_quickMenuSelection].c_str());
+    dl->AddLine(ImVec2(contentX, origin.y + 118.0f * scale),
+                ImVec2(end.x - 48.0f * scale, origin.y + 118.0f * scale),
+                IM_COL32(42, 116, 108, (int)(180 * easeOut)), 1.0f * scale);
+    dl->AddText(font, labelSize, ImVec2(contentX, origin.y + 150.0f * scale),
+                IM_COL32(196, 222, 216, (int)(235 * easeOut)), descriptions[m_quickMenuSelection].c_str());
 }
 
-void TicoOverlay::RenderSaveStatesMenu(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderSaveStatesMenu(ImDrawList *dl, ImVec2 displaySize)
 {
     float scale = OverlayScale();
     const float menuWidth = 400.0f * scale;
@@ -1185,7 +1132,7 @@ void TicoOverlay::RenderSaveStatesMenu(ImDrawList *dl, ImVec2 displaySize)
 }
 
 // Copied logic from EmulatorScreen
-void TicoOverlay::RenderSettingsMenu(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderSettingsMenu(ImDrawList *dl, ImVec2 displaySize)
 {
     float scale = OverlayScale();
     const float menuWidth = 400.0f * scale;
@@ -1365,7 +1312,7 @@ void TicoOverlay::RenderSettingsMenu(ImDrawList *dl, ImVec2 displaySize)
     }
 }
 
-void TicoOverlay::RenderHelpersBar(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderHelpersBar(ImDrawList *dl, ImVec2 displaySize)
 {
     const float scale = OverlayScale();
 
@@ -1464,18 +1411,17 @@ void TicoOverlay::RenderHelpersBar(ImDrawList *dl, ImVec2 displaySize)
 // Input Handling
 //==============================================================================
 
-bool TicoOverlay::HandleInput(const Tico::FrameInput &input)
+bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
 {
-    using namespace Tico;
+    using namespace GBAStation;
 
     const uint64_t buttons = input.buttons;
     const uint64_t pressed = input.pressed;
 
-    // Start+Select ONLY ever opens the overlay — it never closes it (closing is
-    // done with the Back button). This makes accidental closes from input-poll
-    // flicker impossible. While the combo is held we consume it so it can't be
-    // misread by the menu handlers below.
-    const bool comboDown = (buttons & Pad_Start) && (buttons & Pad_Select);
+    // Pad_Guide is synthesized by GBAStation::Main from dc.hotkey.menu.pad.  Do not
+    // infer it from Start+Select here: those buttons belong to the emulated DC
+    // pad and may have been remapped by the user.
+    const bool comboDown = (buttons & Pad_Guide) != 0;
     if (comboDown)
     {
         if (m_currentMenu == OverlayMenu::None)
@@ -1551,7 +1497,7 @@ bool TicoOverlay::HandleInput(const Tico::FrameInput &input)
     {
         if (m_currentMenu == OverlayMenu::QuickMenu)
         {
-            m_quickMenuSelection = (m_quickMenuSelection + 3) % 4; // 4 items (Settings added)
+            m_quickMenuSelection = (m_quickMenuSelection + 7) % 8;
         }
         else if (m_currentMenu == OverlayMenu::SaveStates)
         {
@@ -1582,7 +1528,7 @@ bool TicoOverlay::HandleInput(const Tico::FrameInput &input)
     {
         if (m_currentMenu == OverlayMenu::QuickMenu)
         {
-            m_quickMenuSelection = (m_quickMenuSelection + 1) % 4;
+            m_quickMenuSelection = (m_quickMenuSelection + 1) % 8;
         }
         else if (m_currentMenu == OverlayMenu::SaveStates)
         {
@@ -1675,22 +1621,31 @@ bool TicoOverlay::HandleInput(const Tico::FrameInput &input)
         {
             switch (m_quickMenuSelection)
             {
-            case 0: // Save State
+            case 0: // Resume game
+                Hide();
+                return true;
+            case 1: // Save State
                 m_isSaveMode = true;
                 m_currentMenu = OverlayMenu::SaveStates;
                 m_animTimer = 0.4f;
                 break;
-            case 1: // Load State
+            case 2: // Load State
                 m_isSaveMode = false;
                 m_currentMenu = OverlayMenu::SaveStates;
                 m_animTimer = 0.4f;
                 break;
-            case 2: // Settings
+            case 3: // Cheat settings (Flycast uses the shared core options page)
+            case 4: // Video settings
+            case 5: // Core settings
                 m_currentMenu = OverlayMenu::Settings;
                 m_settingsSelection = 0;
                 m_animTimer = 0.4f;
                 break;
-            case 3: // Exit
+            case 6: // Reset
+                m_shouldReset = true;
+                Hide();
+                return true;
+            case 7: // Exit
                 m_shouldExit = true;
                 break;
             }
@@ -1814,7 +1769,7 @@ static int GetDiscExtensionPriority(const std::string &ext)
     return 99;
 }
 
-void TicoOverlay::ScanForDiscs()
+void GBAStationOverlay::ScanForDiscs()
 {
     m_discs.clear();
     m_discSelection = 0;
@@ -2087,7 +2042,7 @@ void TicoOverlay::ScanForDiscs()
     }
 }
 
-void TicoOverlay::RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize)
 {
     float scale = OverlayScale();
     const float menuWidth = 400.0f * scale;
@@ -2192,7 +2147,7 @@ void TicoOverlay::RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize)
         {
             float y1 = clipP0.y;
             float y2 = clipP0.y + shadowH;
-            dl->AddRectFilledMultiColor(ImVec2(menuPos.x, y1), ImVec2(menuPos.x + menuSize.x, y2),
+            dl->AddRectFilledMulGBAStationlor(ImVec2(menuPos.x, y1), ImVec2(menuPos.x + menuSize.x, y2),
                                         shadowStart, shadowStart, shadowEnd, shadowEnd);
         }
 
@@ -2200,7 +2155,7 @@ void TicoOverlay::RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize)
         {
             float y1 = clipP1.y - shadowH;
             float y2 = clipP1.y;
-            dl->AddRectFilledMultiColor(ImVec2(menuPos.x, y1), ImVec2(menuPos.x + menuSize.x, y2),
+            dl->AddRectFilledMulGBAStationlor(ImVec2(menuPos.x, y1), ImVec2(menuPos.x + menuSize.x, y2),
                                         shadowEnd, shadowEnd, shadowStart, shadowStart);
         }
     }
@@ -2210,13 +2165,13 @@ void TicoOverlay::RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize)
 // Settings Persistence
 //==============================================================================
 
-void TicoOverlay::LoadCoreSettings()
+void GBAStationOverlay::LoadCoreSettings()
 {
     // Read from the shared core config (same file the launcher settings uses)
 #ifdef __SWITCH__
     std::string configPath = "sdmc:/GBAStation/config/cores/flycast.jsonc";
 #else
-    std::string configPath = "tico/config/cores/flycast.jsonc";
+    std::string configPath = "GBAStation/config/cores/flycast.jsonc";
 #endif
 
     std::ifstream file(configPath);
@@ -2311,13 +2266,13 @@ void TicoOverlay::LoadCoreSettings()
     ApplyScalingSettings(false);
 }
 
-void TicoOverlay::SaveCoreSettings()
+void GBAStationOverlay::SaveCoreSettings()
 {
     // Merge into the shared core config (same file the launcher settings uses)
 #ifdef __SWITCH__
     std::string configPath = "sdmc:/GBAStation/config/cores/flycast.jsonc";
 #else
-    std::string configPath = "tico/config/cores/flycast.jsonc";
+    std::string configPath = "GBAStation/config/cores/flycast.jsonc";
 #endif
 
     try
@@ -2380,7 +2335,7 @@ void TicoOverlay::SaveCoreSettings()
     }
 }
 
-void TicoOverlay::ApplyScalingSettings(bool save)
+void GBAStationOverlay::ApplyScalingSettings(bool save)
 {
     if (save)
     {
@@ -2389,7 +2344,7 @@ void TicoOverlay::ApplyScalingSettings(bool save)
 }
 
 // Helper to load SVG
-void TicoOverlay::LoadSVGIcon()
+void GBAStationOverlay::LoadSVGIcon()
 {
     if (!m_host)
         return;
@@ -2440,7 +2395,7 @@ void TicoOverlay::LoadSVGIcon()
 
 // ... existing RenderStatusBar ...
 
-void TicoOverlay::RenderStatusBar(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::RenderStatusBar(ImDrawList *dl, ImVec2 displaySize)
 {
     if (m_animTimer <= 0.0f)
         return;
@@ -2618,10 +2573,10 @@ void TicoOverlay::RenderStatusBar(ImDrawList *dl, ImVec2 displaySize)
 // RetroAchievements Overlay
 //==============================================================================
 
-void TicoOverlay::EnsureRAIconLoaded() {
+void GBAStationOverlay::EnsureRAIconLoaded() {
     // Rasterize assets/ra.svg once and upload it through the host so RA toasts
     // (the "Playing:" session toast, mastered/leaderboard alerts) have an icon,
-    // matching the other Tico cores. Badge textures for individual achievements
+    // matching the other GBAStation cores. Badge textures for individual achievements
     // are still uploaded by the host on demand; this only owns the generic icon.
     if (!m_host)
         return;
@@ -2636,7 +2591,7 @@ void TicoOverlay::EnsureRAIconLoaded() {
 #ifdef __SWITCH__
     const char *svgPath = "romfs:/assets/ra.svg";
 #else
-    const char *svgPath = "tico/assets/ra.svg";
+    const char *svgPath = "GBAStation/assets/ra.svg";
 #endif
     NSVGimage *image = nsvgParseFromFile(svgPath, "px", 96);
     if (!image)
@@ -2666,7 +2621,7 @@ void TicoOverlay::EnsureRAIconLoaded() {
     nsvgRasterize(rast, image, 0, 0, scale, img, w, h, w * 4);
     ImTextureID tex = m_host->CreateTextureRGBA(img, w, h);
     if (tex != 0) {
-        ra->SetIconTexture(tex);
+        ra->SeGBAStationnTexture(tex);
         m_raIconLoadAttempted = true;
     }
 
@@ -2675,7 +2630,7 @@ void TicoOverlay::EnsureRAIconLoaded() {
     nsvgDelete(image);
 }
 
-void TicoOverlay::ResolveNotificationTextures() {
+void GBAStationOverlay::ResolveNotificationTextures() {
     IOverlayRAHost *ra = m_host ? m_host->RA() : nullptr;
     if (!ra) return;
     std::lock_guard<std::mutex> lock(ra->Mutex());
@@ -2699,7 +2654,7 @@ void TicoOverlay::ResolveNotificationTextures() {
     }
 }
 
-void TicoOverlay::RenderRAAlerts(ImDrawList *dl, ImVec2 displaySize, float deltaTime) {
+void GBAStationOverlay::RenderRAAlerts(ImDrawList *dl, ImVec2 displaySize, float deltaTime) {
     IOverlayRAHost *ra = m_host ? m_host->RA() : nullptr;
     if (!ra) return;
     std::lock_guard<std::mutex> lock(ra->Mutex());

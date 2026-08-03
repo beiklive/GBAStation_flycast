@@ -1,7 +1,11 @@
 {
+    "emulator_resume": "返回游戏",
     "emulator_save_state": "保存状态",
     "emulator_load_state": "加载状态",
     "emulator_settings": "设置",
+    "emulator_video_settings": "画面设置",
+    "emulator_core_settings": "核心设置",
+    "emulator_cheats": "金手指",
     "emulator_exit_game": "退出游戏",
     "emulator_select_disc": "选择光盘",
     "emulator_slot": "槽位 %d (%s)",

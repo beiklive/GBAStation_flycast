@@ -1,5 +1,5 @@
-/// @file TicoCore.h
-/// @brief Simplified libretro frontend for Flycast with tico overlay
+/// @file GBAStationCore.h
+/// @brief Simplified libretro frontend for Flycast with GBAStation overlay
 #pragma once
 
 #include <string>
@@ -25,15 +25,15 @@ struct rc_client_t;
 class IRenderer;
 
 // RANotification / RAAlertPosition now live in the backend-agnostic overlay
-// host header so the overlay need not include TicoCore.h.
-#include "TicoOverlayHost.h"
+// host header so the overlay need not include GBAStationCore.h.
+#include "GBAStationOverlayHost.h"
 
 /// @brief Simplified libretro core wrapper for Flycast
-class TicoCore
+class GBAStationCore
 {
 public:
-    TicoCore();
-    ~TicoCore();
+    GBAStationCore();
+    ~GBAStationCore();
 
     /// @brief Initialize the core
     bool Init();
@@ -193,9 +193,9 @@ private:
     bool m_raHardcore = false;
     void LoadRAConfig();
     void SaveRAToken(const std::string& token);
-    static void RAIdentifyGame(rc_client_t* c, TicoCore* core);
+    static void RAIdentifyGame(rc_client_t* c, GBAStationCore* core);
 
-    static void RALoginWithPassword(rc_client_t* c, TicoCore* core);
+    static void RALoginWithPassword(rc_client_t* c, GBAStationCore* core);
 
 public:
     // RA notifications queue (public for overlay access)

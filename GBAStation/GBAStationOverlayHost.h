@@ -1,11 +1,11 @@
-/// @file TicoOverlayHost.h
-/// @brief Backend-agnostic host interface for TicoOverlay.
+/// @file GBAStationOverlayHost.h
+/// @brief Backend-agnostic host interface for GBAStationOverlay.
 ///
-/// The overlay used to call TicoCore directly and create GPU textures through
-/// TicoVulkan/GL #ifdefs. To run the same overlay on both the libretro path
-/// (TicoCore + TicoVulkan) and the native standalone path (flycast emu +
+/// The overlay used to call GBAStationCore directly and create GPU textures through
+/// GBAStationVulkan/GL #ifdefs. To run the same overlay on both the libretro path
+/// (GBAStationCore + GBAStationVulkan) and the native standalone path (flycast emu +
 /// imguiDriver), all of that goes through IOverlayHost. Mirrors how
-/// tico-ppsspp's overlay talks to its host via commands + a Draw context.
+/// GBAStation-ppsspp's overlay talks to its host via commands + a Draw context.
 #pragma once
 
 #include "imgui.h"
@@ -47,12 +47,12 @@ public:
     virtual std::vector<RANotification> &Notifications() = 0;
     virtual RAAlertPosition AlertPosition() const = 0;
     virtual ImTextureID IconTexture() const = 0;
-    virtual void SetIconTexture(ImTextureID tex) = 0;
+    virtual void SeGBAStationnTexture(ImTextureID tex) = 0;
     virtual ImTextureID BadgeTexture(const std::string &badge) const = 0; // 0 if absent
 };
 
 /// Everything the overlay needs from the emulator + renderer, abstracted so the
-/// overlay is free of TicoCore / TicoVulkan / GL.
+/// overlay is free of GBAStationCore / GBAStationVulkan / GL.
 class IOverlayHost
 {
 public:

@@ -87,7 +87,7 @@ option(USE_VULKAN "Build with Vulkan support" ON)
 option(USE_DX9 "Build with Direct3D 9 support" ON)
 option(USE_DX11 "Build with Direct3D 11 support" ON)
 option(LIBRETRO "Build libretro core" OFF)
-option(USE_TICO "Build with tico Switch UI/runtime" OFF)
+option(USE_GBAStation "Build with GBAStation Switch UI/runtime" OFF)
 option(DISABLE_LOGGING "Disable all logging" OFF)
 option(USE_OPENGL "Use OpenGL API" ON)
 option(USE_VIDEOCORE "RPI: use the legacy Broadcom GLES libraries" OFF)
@@ -170,12 +170,12 @@ string(TIMESTAMP BUILD_TIMESTAMP UTC)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/core/version.h.in" "${CMAKE_CURRENT_SOURCE_DIR}/core/version.h" @ONLY)
 
 if(NINTENDO_SWITCH)
-	# Tico builds use Vulkan via NVK. The multi-core libretro static-lib
+	# GBAStation builds use Vulkan via NVK. The multi-core libretro static-lib
 	# build still needs Vulkan disabled (no NVK), so keep the OFF default
-	# unless we're building a tico NRO.
-	if(USE_TICO)
+	# unless we're building a GBAStation NRO.
+	if(USE_GBAStation)
 		set(USE_VULKAN ON CACHE BOOL "Build with Vulkan support" FORCE)
-		# No Mesa GL/EGL on the tico-Vulkan build - the GL renderer sources
+		# No Mesa GL/EGL on the GBAStation-Vulkan build - the GL renderer sources
 		# (core/rend/gles/*, core/wsi/gl_context.cpp, glsm/glsym) would
 		# otherwise be compiled and fail to find any GL symbols.
 		set(USE_OPENGL OFF CACHE BOOL "Use OpenGL API" FORCE)
@@ -185,33 +185,33 @@ if(NINTENDO_SWITCH)
 	enable_language(ASM)
 
 	if(LIBRETRO)
-		if(USE_TICO)
-			# Build as executable with tico overlay UI.
-			# FlycastEntry.cpp holds main(); the agnostic Tico::Main driver and
+		if(USE_GBAStation)
+			# Build as executable with GBAStation overlay UI.
+			# FlycastEntry.cpp holds main(); the agnostic GBAStation::Main driver and
 			# the flycast CoreRuntime implementation are separate TUs.
-			add_executable(${PROJECT_NAME} tico/FlycastEntry.cpp)
+			add_executable(${PROJECT_NAME} GBAStation/FlycastEntry.cpp)
 			target_compile_definitions(${PROJECT_NAME} PRIVATE
-				LIBRETRO HAVE_LIBNX USE_TICO USE_SDL USE_SDL_AUDIO
+				LIBRETRO HAVE_LIBNX USE_GBAStation USE_SDL USE_SDL_AUDIO
 				HAVE_VULKAN VK_USE_PLATFORM_VI_NN
 				IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS IMGUI_DEFINE_MATH_OPERATORS
-				IMGUI_IMPL_VULKAN_NO_PROTOTYPES TICO_VULKAN_OVERLAY)
+				IMGUI_IMPL_VULKAN_NO_PROTOTYPES GBAStation_VULKAN_OVERLAY)
 
-			# tico Vulkan frontend + libretro driver glue.
+			# GBAStation Vulkan frontend + libretro driver glue.
 			target_sources(${PROJECT_NAME} PRIVATE
-				tico/TicoMain.cpp
-				tico/FlycastRuntime.cpp
-				tico/TicoChainload.cpp
-				tico/TicoCore.cpp
-				tico/TicoOverlay.cpp
-				tico/TicoVulkan.cpp
-				tico/TicoTranslationManager.cpp
-				tico/TicoStubs.cpp
+				GBAStation/GBAStationMain.cpp
+				GBAStation/FlycastRuntime.cpp
+				GBAStation/GBAStationChainload.cpp
+				GBAStation/GBAStationCore.cpp
+				GBAStation/GBAStationOverlay.cpp
+				GBAStation/GBAStationVulkan.cpp
+				GBAStation/GBAStationTranslationManager.cpp
+				GBAStation/GBAStationStubs.cpp
 				core/emulator.cpp
 				shell/libretro/audiostream.cpp
 				shell/switch/libnx_vmem.cpp
 				shell/switch/context_switch.S)
 			target_include_directories(${PROJECT_NAME} PRIVATE
-				tico
+				GBAStation
 				shell/libretro
 				shell/switch)
 
@@ -227,38 +227,38 @@ if(NINTENDO_SWITCH)
 				set(MESA_NVK_DIR "/nvk-build" CACHE PATH "Path to Mesa NVK build")
 			endif()
 			if(EXISTS "${MESA_NVK_DIR}/src/nouveau/vulkan/libvulkan.a")
-				set(TICO_NVK_LIBRARY "${MESA_NVK_DIR}/src/nouveau/vulkan/libvulkan.a")
-				set(TICO_NVK_EXTRA_LIBS -ldrm_nouveau)
+				set(GBAStation_NVK_LIBRARY "${MESA_NVK_DIR}/src/nouveau/vulkan/libvulkan.a")
+				set(GBAStation_NVK_EXTRA_LIBS -ldrm_nouveau)
 			elseif(EXISTS "${MESA_NVK_DIR}/lib/libvulkan.a")
-				set(TICO_NVK_LIBRARY "${MESA_NVK_DIR}/lib/libvulkan.a")
-				set(TICO_NVK_EXTRA_LIBS)
+				set(GBAStation_NVK_LIBRARY "${MESA_NVK_DIR}/lib/libvulkan.a")
+				set(GBAStation_NVK_EXTRA_LIBS)
 			else()
 				message(FATAL_ERROR "Could not find NVK libvulkan.a under ${MESA_NVK_DIR}")
 			endif()
 			# Mesa's static ICD expects the loader and DRM syscall boundary supplied by
 			# switchVK's winsys shims.  Keep these tied to switchVK; pnxvk belongs only
 			# to Dekopon and is intentionally not referenced here.
-			set(TICO_SWITCHVK_ROOT "${CMAKE_SOURCE_DIR}/../switchVK")
-			set(TICO_SWITCHVK_MESA_SOURCE "${TICO_SWITCHVK_ROOT}/.ci-build/nxvk-source")
-			set(TICO_SWITCHVK_CROSS_INCLUDE "${TICO_SWITCHVK_ROOT}/.ci-build/nxvk-cross-include")
+			set(GBAStation_SWITCHVK_ROOT "${CMAKE_SOURCE_DIR}/../switchVK")
+			set(GBAStation_SWITCHVK_MESA_SOURCE "${GBAStation_SWITCHVK_ROOT}/.ci-build/nxvk-source")
+			set(GBAStation_SWITCHVK_CROSS_INCLUDE "${GBAStation_SWITCHVK_ROOT}/.ci-build/nxvk-cross-include")
 			target_sources(${PROJECT_NAME} PRIVATE
-				"${TICO_SWITCHVK_ROOT}/winsys/drm_shim.c"
-				"${TICO_SWITCHVK_ROOT}/winsys/switch_libc_shim.c"
-				"${TICO_SWITCHVK_ROOT}/winsys/nvk_loaderless_shim.c"
-				"${TICO_SWITCHVK_ROOT}/compat/compat.c")
+				"${GBAStation_SWITCHVK_ROOT}/winsys/drm_shim.c"
+				"${GBAStation_SWITCHVK_ROOT}/winsys/switch_libc_shim.c"
+				"${GBAStation_SWITCHVK_ROOT}/winsys/nvk_loaderless_shim.c"
+				"${GBAStation_SWITCHVK_ROOT}/compat/compat.c")
 			target_include_directories(${PROJECT_NAME} PRIVATE
-				"${TICO_SWITCHVK_ROOT}/winsys"
-				"${TICO_SWITCHVK_ROOT}/compat"
-				"${TICO_SWITCHVK_CROSS_INCLUDE}"
-				"${TICO_SWITCHVK_MESA_SOURCE}/src/nouveau/drm")
+				"${GBAStation_SWITCHVK_ROOT}/winsys"
+				"${GBAStation_SWITCHVK_ROOT}/compat"
+				"${GBAStation_SWITCHVK_CROSS_INCLUDE}"
+				"${GBAStation_SWITCHVK_MESA_SOURCE}/src/nouveau/drm")
 			target_compile_definitions(${PROJECT_NAME} PRIVATE _GNU_SOURCE _DEFAULT_SOURCE NVK_SHIM_EXTERNAL_POSIX_STUBS DRM_SHIM_DEBUG)
 			target_compile_options(${PROJECT_NAME} PRIVATE
-				-idirafter "${TICO_SWITCHVK_MESA_SOURCE}/include")
+				-idirafter "${GBAStation_SWITCHVK_MESA_SOURCE}/include")
 			target_link_libraries(${PROJECT_NAME} PRIVATE
 				"-Wl,--whole-archive"
-				${TICO_NVK_LIBRARY}
+				${GBAStation_NVK_LIBRARY}
 				"-Wl,--no-whole-archive"
-				${TICO_NVK_EXTRA_LIBS}
+				${GBAStation_NVK_EXTRA_LIBS}
 				-lzstd
 				-lz)
 			target_link_options(${PROJECT_NAME} PRIVATE
@@ -269,7 +269,7 @@ if(NINTENDO_SWITCH)
 				-Wl,--wrap=open -Wl,--wrap=close -Wl,--wrap=stat -Wl,--wrap=lstat
 				-Wl,--wrap=vk_icdGetInstanceProcAddr)
 
-			# ImGui renders the Tico overlay into the Vulkan swapchain.
+			# ImGui renders the GBAStation overlay into the Vulkan swapchain.
 			target_sources(${PROJECT_NAME} PRIVATE
 				core/deps/imgui/imgui.cpp
 				core/deps/imgui/imgui_draw.cpp
@@ -280,7 +280,7 @@ if(NINTENDO_SWITCH)
 				core/deps/imgui
 				core/deps/imgui/backends)
 
-			set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "tico-flycast")
+			set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "GBAStation-flycast")
 		else()
 			# Build as static library for multi-core integration
 			add_library(${PROJECT_NAME} STATIC core/emulator.cpp)
@@ -293,7 +293,7 @@ if(NINTENDO_SWITCH)
 				target_compile_options(${PROJECT_NAME} PRIVATE ${FLYCAST_EXTRA_CFLAGS_LIST})
 			endif()
 		endif()
-		if(NOT USE_TICO)
+		if(NOT USE_GBAStation)
 			find_path(GLEXT_H_INCLUDE_DIR NAMES GL/glext.h REQUIRED)
 			target_include_directories(${PROJECT_NAME} PRIVATE ${GLEXT_H_INCLUDE_DIR})
 		endif()
@@ -590,7 +590,7 @@ if(USE_VULKAN)
 		add_subdirectory(core/deps/glslang EXCLUDE_FROM_ALL)
 	endif()
 	target_link_libraries(${PROJECT_NAME} PRIVATE glslang::glslang-default-resource-limits glslang::SPIRV)
-	if(NINTENDO_SWITCH AND USE_TICO AND NOT USE_HOST_GLSLANG)
+	if(NINTENDO_SWITCH AND USE_GBAStation AND NOT USE_HOST_GLSLANG)
 		target_link_directories(${PROJECT_NAME} PRIVATE
 			"${CMAKE_BINARY_DIR}/core/deps/glslang/glslang/OSDependent/Unix")
 	endif()
@@ -1757,47 +1757,47 @@ endif()
 
 if(NINTENDO_SWITCH)
 	if(LIBRETRO)
-		if(USE_TICO)
-			# Generated NRO for tico overlay
+		if(USE_GBAStation)
+			# Generated NRO for GBAStation overlay
 			target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/../../../../external/nlohmann/include")
 			
 			# rcheevos (RetroAchievements) include + sources
-			set(TICO_RCHEEVOS_DIR "${CMAKE_SOURCE_DIR}/deps/rcheevos")
-			target_include_directories(${PROJECT_NAME} PRIVATE "${TICO_RCHEEVOS_DIR}/include")
+			set(GBAStation_RCHEEVOS_DIR "${CMAKE_SOURCE_DIR}/deps/rcheevos")
+			target_include_directories(${PROJECT_NAME} PRIVATE "${GBAStation_RCHEEVOS_DIR}/include")
 			target_compile_definitions(${PROJECT_NAME} PRIVATE RC_DISABLE_LUA RC_CLIENT_SUPPORTS_HASH)
 			target_sources(${PROJECT_NAME} PRIVATE
-				${TICO_RCHEEVOS_DIR}/src/rc_client.c
-				${TICO_RCHEEVOS_DIR}/src/rc_compat.c
-				${TICO_RCHEEVOS_DIR}/src/rc_util.c
-				${TICO_RCHEEVOS_DIR}/src/rc_version.c
-				${TICO_RCHEEVOS_DIR}/src/rapi/rc_api_common.c
-				${TICO_RCHEEVOS_DIR}/src/rapi/rc_api_editor.c
-				${TICO_RCHEEVOS_DIR}/src/rapi/rc_api_info.c
-				${TICO_RCHEEVOS_DIR}/src/rapi/rc_api_runtime.c
-				${TICO_RCHEEVOS_DIR}/src/rapi/rc_api_user.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/alloc.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/condition.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/condset.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/consoleinfo.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/format.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/lboard.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/memref.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/operand.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/rc_validate.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/richpresence.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/runtime.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/runtime_progress.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/trigger.c
-				${TICO_RCHEEVOS_DIR}/src/rcheevos/value.c
-				${TICO_RCHEEVOS_DIR}/src/rhash/aes.c
-				${TICO_RCHEEVOS_DIR}/src/rhash/cdreader.c
-				${TICO_RCHEEVOS_DIR}/src/rhash/hash.c
-				${TICO_RCHEEVOS_DIR}/src/rhash/hash_disc.c
-				${TICO_RCHEEVOS_DIR}/src/rhash/hash_encrypted.c
-				${TICO_RCHEEVOS_DIR}/src/rhash/hash_rom.c
-				${TICO_RCHEEVOS_DIR}/src/rhash/hash_zip.c
-				${TICO_RCHEEVOS_DIR}/src/rhash/md5.c)
-			# Generate NRO for tico overlay build
+				${GBAStation_RCHEEVOS_DIR}/src/rc_client.c
+				${GBAStation_RCHEEVOS_DIR}/src/rc_compat.c
+				${GBAStation_RCHEEVOS_DIR}/src/rc_util.c
+				${GBAStation_RCHEEVOS_DIR}/src/rc_version.c
+				${GBAStation_RCHEEVOS_DIR}/src/rapi/rc_api_common.c
+				${GBAStation_RCHEEVOS_DIR}/src/rapi/rc_api_editor.c
+				${GBAStation_RCHEEVOS_DIR}/src/rapi/rc_api_info.c
+				${GBAStation_RCHEEVOS_DIR}/src/rapi/rc_api_runtime.c
+				${GBAStation_RCHEEVOS_DIR}/src/rapi/rc_api_user.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/alloc.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/condition.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/condset.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/consoleinfo.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/format.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/lboard.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/memref.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/operand.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/rc_validate.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/richpresence.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/runtime.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/runtime_progress.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/trigger.c
+				${GBAStation_RCHEEVOS_DIR}/src/rcheevos/value.c
+				${GBAStation_RCHEEVOS_DIR}/src/rhash/aes.c
+				${GBAStation_RCHEEVOS_DIR}/src/rhash/cdreader.c
+				${GBAStation_RCHEEVOS_DIR}/src/rhash/hash.c
+				${GBAStation_RCHEEVOS_DIR}/src/rhash/hash_disc.c
+				${GBAStation_RCHEEVOS_DIR}/src/rhash/hash_encrypted.c
+				${GBAStation_RCHEEVOS_DIR}/src/rhash/hash_rom.c
+				${GBAStation_RCHEEVOS_DIR}/src/rhash/hash_zip.c
+				${GBAStation_RCHEEVOS_DIR}/src/rhash/md5.c)
+			# Generate NRO for GBAStation overlay build
 			# The target is ${PROJECT_NAME} (flycast_libretro), output name is GBAStationFlycastStub.
 			set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "GBAStationFlycastStub")
 			
@@ -1805,10 +1805,10 @@ if(NINTENDO_SWITCH)
 			set(ROMFS_DIR "${CMAKE_CURRENT_BINARY_DIR}/romfs")
 			file(MAKE_DIRECTORY ${ROMFS_DIR})
 			
-			# Copy fonts, lang, and assets from local tico directories
-			file(COPY "${CMAKE_SOURCE_DIR}/tico/fonts" DESTINATION ${ROMFS_DIR})
-			file(COPY "${CMAKE_SOURCE_DIR}/tico/lang" DESTINATION ${ROMFS_DIR})
-			file(COPY "${CMAKE_SOURCE_DIR}/tico/assets" DESTINATION ${ROMFS_DIR})
+			# Copy fonts, lang, and assets from local GBAStation directories
+			file(COPY "${CMAKE_SOURCE_DIR}/GBAStation/fonts" DESTINATION ${ROMFS_DIR})
+			file(COPY "${CMAKE_SOURCE_DIR}/GBAStation/lang" DESTINATION ${ROMFS_DIR})
+			file(COPY "${CMAKE_SOURCE_DIR}/GBAStation/assets" DESTINATION ${ROMFS_DIR})
 			
 			nx_generate_nacp(GBAStationFlycastStub.nacp NAME "GBAStation Flycast Stub" AUTHOR "GBAStation" VERSION "2.0.0")
 			nx_create_nro(${PROJECT_NAME} NACP GBAStationFlycastStub.nacp ICON "${CMAKE_SOURCE_DIR}/shell/switch/flycast.jpeg" ROMFS ${ROMFS_DIR})
@@ -1826,7 +1826,7 @@ if(NINTENDO_SWITCH)
 				DEPENDS xxHash::xxhash chdr-static zip ${PROJECT_NAME})
 		endif()
 	else()
-		nx_generate_nacp(flycast.nacp NAME "Flycast" AUTHOR "ticoverse.com" VERSION "2.0.0")
+		nx_generate_nacp(flycast.nacp NAME "Flycast" AUTHOR "GBAStationverse.com" VERSION "2.0.0")
 		nx_create_nro(flycast NACP flycast.nacp ICON "${CMAKE_SOURCE_DIR}/shell/switch/flycast.jpeg")
 	endif()
 endif()

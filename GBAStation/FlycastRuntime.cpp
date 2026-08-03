@@ -1,16 +1,16 @@
 /// @file FlycastRuntime.cpp
 /// @brief Flycast/libretro CoreRuntime. Orchestration extracted from the old
-/// monolithic TicoMain.cpp; the v1 bring-up sequence and frame ordering are
+/// monolithic GBAStationMain.cpp; the v1 bring-up sequence and frame ordering are
 /// preserved (Acquire → retro_run → composite overlay → present).
 
 #include "FlycastRuntime.h"
 
-#include "TicoAudio.h"
-#include "TicoConfig.h"
-#include "TicoCore.h"
-#include "TicoLogger.h"
-#include "TicoOverlay.h"
-#include "TicoVulkan.h"
+#include "GBAStationAudio.h"
+#include "GBAStationConfig.h"
+#include "GBAStationCore.h"
+#include "GBAStationLogger.h"
+#include "GBAStationOverlay.h"
+#include "GBAStationVulkan.h"
 
 #include "imgui.h"
 
@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <sys/stat.h>
 
@@ -27,15 +29,92 @@
 #include <switch.h>
 #endif
 
-namespace Tico
+namespace GBAStation
 {
 
-// Adapts the libretro TicoCore + TicoVulkan renderer to the overlay's
+namespace {
+
+constexpr ImWchar kGBAStationChineseRanges[] = {
+    0x0020, 0x00FF,
+    0x2000, 0x30FF,
+    0x3400, 0x9FFF,
+    0,
+};
+
+constexpr ImWchar kGBAStationMaterialRanges[] = {
+    0xE000, 0xF8FF,
+    0,
+};
+
+ImFont *AddGBAStationSystemFont(ImGuiIO &io, float size) {
+#ifdef __SWITCH__
+    if (R_FAILED(plInitialize(PlServiceType_User)))
+        return nullptr;
+
+    PlFontData sharedFont{};
+    Result rc = plGetSharedFontByType(&sharedFont, PlSharedFontType_ExtChineseSimplified);
+    if (R_FAILED(rc) || !sharedFont.address || sharedFont.size == 0)
+        rc = plGetSharedFontByType(&sharedFont, PlSharedFontType_ChineseSimplified);
+    if (R_FAILED(rc) || !sharedFont.address || sharedFont.size == 0) {
+        plExit();
+        return nullptr;
+    }
+
+    void *fontData = std::malloc(sharedFont.size);
+    if (!fontData) {
+        plExit();
+        return nullptr;
+    }
+    std::memcpy(fontData, sharedFont.address, sharedFont.size);
+    plExit();
+
+    ImFontConfig config;
+    config.OversampleH = 1;
+    config.OversampleV = 1;
+    ImFont *font = io.Fonts->AddFontFromMemoryTTF(fontData, static_cast<int>(sharedFont.size),
+                                                    size, &config, kGBAStationChineseRanges);
+    if (!font) {
+        std::free(fontData);
+        return nullptr;
+    }
+    io.FontDefault = font;
+
+    ImFontConfig iconConfig;
+    iconConfig.MergeMode = true;
+    iconConfig.PixelSnapH = true;
+    io.Fonts->AddFontFromFileTTF("romfs:/fonts/MaterialIcons-Regular.ttf", size,
+                                 &iconConfig, kGBAStationMaterialRanges);
+    return font;
+#else
+    (void)io;
+    (void)size;
+    return nullptr;
+#endif
+}
+
+void ApplyGBAStationMenuStyle() {
+    ImGui::StyleColorsDark();
+    ImGuiStyle &style = ImGui::GetStyle();
+    style.WindowRounding = 6.0f;
+    style.ChildRounding = 4.0f;
+    style.FrameRounding = 4.0f;
+    style.GrabRounding = 3.0f;
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.055f, 0.075f, 0.090f, 0.97f);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.070f, 0.105f, 0.120f, 1.00f);
+    style.Colors[ImGuiCol_Header] = ImVec4(0.050f, 0.420f, 0.390f, 1.00f);
+    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.070f, 0.520f, 0.480f, 1.00f);
+    style.Colors[ImGuiCol_Button] = ImVec4(0.050f, 0.420f, 0.390f, 1.00f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.070f, 0.520f, 0.480f, 1.00f);
+}
+
+} // namespace
+
+// Adapts the libretro GBAStationCore + GBAStationVulkan renderer to the overlay's
 // backend-agnostic IOverlayHost / IOverlayRAHost interfaces.
 class FlycastOverlayHost final : public IOverlayHost, public IOverlayRAHost
 {
 public:
-    explicit FlycastOverlayHost(TicoCore *core) : core_(core) {}
+    explicit FlycastOverlayHost(GBAStationCore *core) : core_(core) {}
 
     std::string GetGamePath() override { return core_ ? core_->GetGamePath() : std::string(); }
     bool IsGameLoaded() override { return core_ && core_->IsGameLoaded(); }
@@ -60,22 +139,22 @@ public:
 
     ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) override
     {
-        return TicoVulkan::CreateOverlayTextureRGBA(rgba, static_cast<uint32_t>(width),
+        return GBAStationVulkan::CreateOverlayTextureRGBA(rgba, static_cast<uint32_t>(width),
                                                     static_cast<uint32_t>(height));
     }
     void DestroyTexture(ImTextureID tex) override
     {
-        if (tex) TicoVulkan::DestroyOverlayTexture(tex);
+        if (tex) GBAStationVulkan::DestroyOverlayTexture(tex);
     }
 
     IOverlayRAHost *RA() override { return this; }
 
-    // IOverlayRAHost — backed by TicoCore's RA state.
+    // IOverlayRAHost — backed by GBAStationCore's RA state.
     std::mutex &Mutex() override { return core_->m_raCallbackMutex; }
     std::vector<RANotification> &Notifications() override { return core_->m_raNotifications; }
     RAAlertPosition AlertPosition() const override { return core_->m_raAlertPosition; }
     ImTextureID IconTexture() const override { return core_->m_raIconTexture; }
-    void SetIconTexture(ImTextureID tex) override { core_->m_raIconTexture = tex; }
+    void SeGBAStationnTexture(ImTextureID tex) override { core_->m_raIconTexture = tex; }
     ImTextureID BadgeTexture(const std::string &badge) const override
     {
         auto it = core_->m_raBadgeCache.find(badge);
@@ -107,18 +186,18 @@ private:
         }
 
         const std::string stateDir =
-            std::string(Tico::Paths::StatesRoot) + "/" + system + "/";
+            std::string(GBAStation::Paths::StatesRoot) + "/" + system + "/";
 
         struct stat st;
-        if (stat(Tico::Paths::StatesRoot, &st) == -1)
-            mkdir(Tico::Paths::StatesRoot, 0777);
+        if (stat(GBAStation::Paths::StatesRoot, &st) == -1)
+            mkdir(GBAStation::Paths::StatesRoot, 0777);
         if (stat(stateDir.c_str(), &st) == -1)
             mkdir(stateDir.c_str(), 0777);
 
         return stateDir + name + ".state" + std::to_string(slot);
     }
 
-    TicoCore *core_ = nullptr;
+    GBAStationCore *core_ = nullptr;
 };
 
 namespace
@@ -128,7 +207,7 @@ namespace
 u8 s_lastOperationMode = 255;
 
 /// Always 1920×1080 surface; crop selects the visible sub-region for handheld
-/// vs docked. (Owned by the runtime now that Tico::Main is display-agnostic.)
+/// vs docked. (Owned by the runtime now that GBAStation::Main is display-agnostic.)
 void UpdateScreenMode()
 {
     u8 op = appletGetOperationMode();
@@ -144,9 +223,9 @@ void UpdateScreenMode()
 void UpdateScreenMode() {}
 #endif
 
-// TicoCore::SetAudioCallbacks takes plain function pointers, so route them
+// GBAStationCore::SetAudioCallbacks takes plain function pointers, so route them
 // through a file-static audio sink set up in Initialize().
-TicoAudio *s_audio = nullptr;
+GBAStationAudio *s_audio = nullptr;
 
 void AudioSampleCallback(int16_t left, int16_t right)
 {
@@ -212,7 +291,7 @@ static bool IsArcadePath(const std::string &path)
 
 bool FlycastRuntime::Configure(const LaunchInfo &launch)
 {
-    romPath_ = launch.contentPath.empty() ? TicoConfig::TEST_ROM : launch.contentPath;
+    romPath_ = launch.contentPath.empty() ? GBAStationConfig::TEST_ROM : launch.contentPath;
     titleArg_ = launch.title;
     isArcade_ = IsArcadePath(romPath_);
     return true;
@@ -220,13 +299,13 @@ bool FlycastRuntime::Configure(const LaunchInfo &launch)
 
 bool FlycastRuntime::InitAudio()
 {
-    if (TicoConfig::USE_SDLQUEUEAUDIO)
+    if (GBAStationConfig::USE_SDLQUEUEAUDIO)
     {
         SDL_AudioSpec want, have;
         SDL_zero(want);
-        want.freq = TicoAudio::SAMPLE_RATE;
+        want.freq = GBAStationAudio::SAMPLE_RATE;
         want.format = AUDIO_S16SYS;
-        want.channels = TicoAudio::CHANNELS;
+        want.channels = GBAStationAudio::CHANNELS;
         want.samples = 2048;
         want.callback = nullptr;
 
@@ -252,7 +331,7 @@ bool FlycastRuntime::InitAudio()
 
 bool FlycastRuntime::Initialize(const LaunchInfo &)
 {
-    // Tico::Main is SDL-free (shared with the standalone target), so the
+    // GBAStation::Main is SDL-free (shared with the standalone target), so the
     // libretro path initializes the SDL subsystems it needs (audio + timer).
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER) != 0)
         LOG_WARN("HOME", "SDL_Init(AUDIO|TIMER) failed: %s", SDL_GetError());
@@ -266,23 +345,23 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
 
     // VkInstance + VkSurface must exist before retro_set_environment so the
     // negotiation interface can refer to a real surface at device creation.
-    if (!TicoVulkan::CreateInstance())
+    if (!GBAStationVulkan::CreateInstance())
     {
-        LOG_ERROR("HOME", "TicoVulkan::CreateInstance failed");
+        LOG_ERROR("HOME", "GBAStationVulkan::CreateInstance failed");
         return false;
     }
 
-    core_ = std::make_unique<TicoCore>();
+    core_ = std::make_unique<GBAStationCore>();
     core_->SetAudioCallbacks(AudioSampleCallback, AudioSampleBatchCallback, AudioFlushCallback);
 
-    audio_ = std::make_unique<TicoAudio>();
+    audio_ = std::make_unique<GBAStationAudio>();
     s_audio = audio_.get();
     if (!audio_->Init(audioDevice_))
-        LOG_WARN("HOME", "TicoAudio init failed");
+        LOG_WARN("HOME", "GBAStationAudio init failed");
 
     if (!core_->Init())
     {
-        LOG_ERROR("HOME", "TicoCore::Init failed");
+        LOG_ERROR("HOME", "GBAStationCore::Init failed");
         return false;
     }
     return true;
@@ -299,7 +378,7 @@ bool FlycastRuntime::LoadContent(const std::string &path)
     }
     else if (!InitOverlay(romPath_))
     {
-        LOG_WARN("HOME", "Overlay init failed; continuing without Tico overlay");
+        LOG_WARN("HOME", "Overlay init failed; continuing without GBAStation overlay");
     }
 
     lastTicks_ = SDL_GetTicks();
@@ -308,11 +387,11 @@ bool FlycastRuntime::LoadContent(const std::string &path)
 
 bool FlycastRuntime::InitOverlay(const std::string &romPath)
 {
-    if (!TicoVulkan::IsReady())
+    if (!GBAStationVulkan::IsReady())
         return false;
 
     uint32_t width = 0, height = 0;
-    TicoVulkan::GetSwapExtent(width, height);
+    GBAStationVulkan::GetSwapExtent(width, height);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -336,11 +415,12 @@ bool FlycastRuntime::InitOverlay(const std::string &romPath)
         "sdmc:/GBAStation/DC/assets/description.ttf",
     };
 
+    ImFont *systemFont = AddGBAStationSystemFont(io, 30.0f);
     const char *titleFont = FirstExistingPath(titleFontPaths, sizeof(titleFontPaths) / sizeof(titleFontPaths[0]));
     const char *descriptionFont = FirstExistingPath(descriptionFontPaths, sizeof(descriptionFontPaths) / sizeof(descriptionFontPaths[0]));
-    if (titleFont)
+    if (!systemFont && titleFont)
         io.Fonts->AddFontFromFileTTF(titleFont, 30.0f);
-    if (descriptionFont)
+    if (!systemFont && descriptionFont)
         io.Fonts->AddFontFromFileTTF(descriptionFont, 22.0f);
     if (io.Fonts->Fonts.Size == 0)
     {
@@ -349,26 +429,22 @@ bool FlycastRuntime::InitOverlay(const std::string &romPath)
     }
     io.FontGlobalScale = overlayBaseFontScale_ * OverlayModeScale();
 
-    ImGui::StyleColorsDark();
-    ImGuiStyle &style = ImGui::GetStyle();
-    style.WindowRounding = 18.0f;
-    style.FrameRounding = 12.0f;
-    style.GrabRounding = 12.0f;
+    ApplyGBAStationMenuStyle();
 
-    if (!TicoVulkan::InitOverlayRenderer())
+    if (!GBAStationVulkan::InitOverlayRenderer())
     {
         ImGui::DestroyContext();
         LOG_WARN("OVERLAY", "ImGui Vulkan overlay renderer unavailable");
         return false;
     }
 
-    overlay_ = std::make_unique<TicoOverlay>();
+    overlay_ = std::make_unique<GBAStationOverlay>();
     overlayHost_ = std::make_unique<FlycastOverlayHost>(core_.get());
     overlay_->SetHost(overlayHost_.get());
     // Prefer the launcher-supplied title; fall back to the rom filename.
     overlay_->SetGameTitle(titleArg_.empty() ? GameTitleFromPath(romPath) : titleArg_);
     overlayReady_ = true;
-    LOG_INFO("OVERLAY", "Tico overlay initialized");
+    LOG_INFO("OVERLAY", "GBAStation overlay initialized");
     return true;
 }
 
@@ -376,7 +452,7 @@ void FlycastRuntime::ShutdownOverlay()
 {
     overlay_.reset();       // dtor frees textures via overlayHost_ (still alive)
     overlayHost_.reset();
-    TicoVulkan::ShutdownOverlayRenderer();
+    GBAStationVulkan::ShutdownOverlayRenderer();
     if (ImGui::GetCurrentContext())
         ImGui::DestroyContext();
     overlayReady_ = false;
@@ -388,21 +464,21 @@ void FlycastRuntime::RenderOverlayFrame(float deltaTime)
         return;
 
     uint32_t width = 0, height = 0;
-    TicoVulkan::GetSwapExtent(width, height);
+    GBAStationVulkan::GetSwapExtent(width, height);
 
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
     io.DeltaTime = deltaTime > 0.0f ? deltaTime : (1.0f / 60.0f);
     io.FontGlobalScale = overlayBaseFontScale_ * OverlayModeScale();
 
-    TicoVulkan::BeginOverlayFrame();
+    GBAStationVulkan::BeginOverlayFrame();
     ImGui::NewFrame();
     overlay_->Update(io.DeltaTime);
     overlay_->Render(io.DisplaySize, 0, 4.0f / 3.0f,
                      static_cast<int>(width), static_cast<int>(height),
                      static_cast<int>(width), static_cast<int>(height));
     ImGui::Render();
-    TicoVulkan::SetOverlayDrawData(ImGui::GetDrawData());
+    GBAStationVulkan::SetOverlayDrawData(ImGui::GetDrawData());
 }
 
 void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
@@ -507,6 +583,9 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
         return;
 
     const bool overlayVisible = overlay_ && overlay_->IsVisible();
+    fastForward_ = !overlayVisible && (input.buttons & Pad_FastForward) != 0;
+    if (audio_)
+        audio_->SetFastForward(fastForward_);
     if (core_)
     {
         if (overlayVisible)
@@ -528,9 +607,15 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
 void FlycastRuntime::RunFrame()
 {
     UpdateScreenMode();
-    frameInFlight_ = TicoVulkan::BeginFrame();
+    frameInFlight_ = GBAStationVulkan::BeginFrame();
     if (frameInFlight_ && core_)
+    {
         core_->RunFrame();
+        // The frontend owns pacing through SDL audio.  While fast-forwarding
+        // audio is deliberately dropped, so execute one extra core frame.
+        if (fastForward_ && !(overlay_ && overlay_->IsVisible()))
+            core_->RunFrame();
+    }
 }
 
 void FlycastRuntime::RenderFrame()
@@ -547,28 +632,28 @@ void FlycastRuntime::RenderFrame()
     RenderOverlayFrame(deltaTime);
 
     // Apply the overlay's screen-size / display-mode selection to the game blit.
-    // The game image is composited by TicoVulkan (not ImGui), so the destination
+    // The game image is composited by GBAStationVulkan (not ImGui), so the destination
     // rect has to be handed to it here; otherwise it always fills the screen.
     if (overlay_)
     {
         uint32_t sw = 0, sh = 0;
-        TicoVulkan::GetSwapExtent(sw, sh);
+        GBAStationVulkan::GetSwapExtent(sw, sh);
         if (sw > 0 && sh > 0)
         {
             const float coreAspect = core_ ? core_->GetAspectRatio() : (4.0f / 3.0f);
             float vx = 0.0f, vy = 0.0f, vw = 0.0f, vh = 0.0f;
             overlay_->GetGameViewport(static_cast<float>(sw), static_cast<float>(sh),
                                       coreAspect, vx, vy, vw, vh);
-            TicoVulkan::SetGameViewport(static_cast<int>(vx + 0.5f), static_cast<int>(vy + 0.5f),
+            GBAStationVulkan::SetGameViewport(static_cast<int>(vx + 0.5f), static_cast<int>(vy + 0.5f),
                                         static_cast<int>(vw + 0.5f), static_cast<int>(vh + 0.5f));
         }
     }
     else
     {
-        TicoVulkan::SetGameViewport(0, 0, 0, 0); // full screen
+        GBAStationVulkan::SetGameViewport(0, 0, 0, 0); // full screen
     }
 
-    TicoVulkan::EndFrame();
+    GBAStationVulkan::EndFrame();
     frameInFlight_ = false;
 }
 
@@ -577,14 +662,14 @@ void FlycastRuntime::Shutdown()
     LOG_INFO("HOME", "Shutting down");
     ShutdownOverlay();
     core_.reset();
-    TicoVulkan::Shutdown();
+    GBAStationVulkan::Shutdown();
 
     if (audio_)
         audio_->Shutdown();
     s_audio = nullptr;
-    if (!TicoConfig::USE_SDLQUEUEAUDIO)
+    if (!GBAStationConfig::USE_SDLQUEUEAUDIO)
         Mix_CloseAudio();
     SDL_Quit();
 }
 
-}  // namespace Tico
+}  // namespace GBAStation

@@ -1,4 +1,4 @@
-/// @file TicoVulkan.cpp
+/// @file GBAStationVulkan.cpp
 /// @brief Vulkan frontend implementation.
 ///
 /// Lifecycle:
@@ -14,8 +14,8 @@
 /// The libretro Vulkan interface is sparsely documented; the canonical
 /// reference is core/deps/libretro-common/include/libretro_vulkan.h.
 
-#include "TicoVulkan.h"
-#include "TicoLogger.h"
+#include "GBAStationVulkan.h"
+#include "GBAStationLogger.h"
 
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
@@ -35,7 +35,7 @@ PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance, con
 VkResult VKAPI_CALL vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t* pVersion);
 }
 
-static VKAPI_ATTR VkResult VKAPI_CALL TicoEnumerateInstanceLayerProperties(
+static VKAPI_ATTR VkResult VKAPI_CALL GBAStationEnumerateInstanceLayerProperties(
     uint32_t* pPropertyCount, VkLayerProperties* /*pProperties*/)
 {
     if (!pPropertyCount)
@@ -44,9 +44,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL TicoEnumerateInstanceLayerProperties(
     return VK_SUCCESS;
 }
 
-static VkInstance g_ticoIcdInstance = VK_NULL_HANDLE;
+static VkInstance g_GBAStationIcdInstance = VK_NULL_HANDLE;
 
-static void TicoIcdTrace(const char* name, VkInstance instance, PFN_vkVoidFunction function)
+static void GBAStationIcdTrace(const char* name, VkInstance instance, PFN_vkVoidFunction function)
 {
     FILE* fp = fopen("sdmc:/GBAStation/debug/flycast_stub.log", "ab");
     if (!fp)
@@ -56,34 +56,34 @@ static void TicoIcdTrace(const char* name, VkInstance instance, PFN_vkVoidFuncti
     std::fclose(fp);
 }
 
-static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL TicoGetDeviceProcAddr(
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GBAStationGetDeviceProcAddr(
     VkDevice /*device*/, const char* pName)
 {
     if (!pName)
         return nullptr;
-    PFN_vkVoidFunction func = vk_icdGetInstanceProcAddr(g_ticoIcdInstance, pName);
+    PFN_vkVoidFunction func = vk_icdGetInstanceProcAddr(g_GBAStationIcdInstance, pName);
     if (!func)
         func = vk_icdGetInstanceProcAddr(VK_NULL_HANDLE, pName);
     return func;
 }
 
-static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL TicoGetInstanceProcAddr(
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GBAStationGetInstanceProcAddr(
     VkInstance instance, const char* pName)
 {
     if (!pName)
         return nullptr;
     if (instance != VK_NULL_HANDLE)
-        g_ticoIcdInstance = instance;
+        g_GBAStationIcdInstance = instance;
     if (std::strcmp(pName, "vkGetInstanceProcAddr") == 0)
-        return reinterpret_cast<PFN_vkVoidFunction>(&TicoGetInstanceProcAddr);
+        return reinterpret_cast<PFN_vkVoidFunction>(&GBAStationGetInstanceProcAddr);
     if (std::strcmp(pName, "vkGetDeviceProcAddr") == 0)
-        return reinterpret_cast<PFN_vkVoidFunction>(&TicoGetDeviceProcAddr);
+        return reinterpret_cast<PFN_vkVoidFunction>(&GBAStationGetDeviceProcAddr);
     if (std::strcmp(pName, "vkEnumerateInstanceLayerProperties") == 0)
-        return reinterpret_cast<PFN_vkVoidFunction>(&TicoEnumerateInstanceLayerProperties);
+        return reinterpret_cast<PFN_vkVoidFunction>(&GBAStationEnumerateInstanceLayerProperties);
     const PFN_vkVoidFunction function = vk_icdGetInstanceProcAddr(instance, pName);
     if (std::strcmp(pName, "vkEnumeratePhysicalDevices") == 0 ||
         std::strcmp(pName, "vkGetPhysicalDeviceProperties") == 0) {
-        TicoIcdTrace(pName, instance, function);
+        GBAStationIcdTrace(pName, instance, function);
     }
     return function;
 }
@@ -92,12 +92,22 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL TicoGetInstanceProcAddr(
 // Note: VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE is defined in
 // core/rend/vulkan/vk_context_lr.cpp; we share the same dispatcher.
 
-namespace TicoVulkan
+namespace GBAStationVulkan
 {
 namespace
 {
 
 constexpr const char* TAG = "VK";
+constexpr uint32_t kGBAStationImageExtentMagic = 0x47425845; // "GBXE"
+
+// Must match the private pNext payload in vk_context_lr.cpp.  This avoids
+// blitting a scaled core framebuffer with its unrelated logical AV extent.
+struct GBAStationImageExtent
+{
+    uint32_t magic;
+    uint32_t width;
+    uint32_t height;
+};
 
 // --- State ---------------------------------------------------------------
 
@@ -206,7 +216,7 @@ PFN_vkGetInstanceProcAddr GetInstanceProcAddrFunc()
     uint32_t icdVersion = 5;
     vk_icdNegotiateLoaderICDInterfaceVersion(&icdVersion);
     VK_LOG_INFO("switchVK ICD negotiated version=%u", icdVersion);
-    return reinterpret_cast<PFN_vkGetInstanceProcAddr>(&TicoGetInstanceProcAddr);
+    return reinterpret_cast<PFN_vkGetInstanceProcAddr>(&GBAStationGetInstanceProcAddr);
 #else
     return reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr);
@@ -425,7 +435,7 @@ bool CreateInstanceInternal()
     VK_LOG_INFO("dispatcher init global ok");
 #endif
 
-    vk::ApplicationInfo appInfo("tico-flycast", 1, "Flycast", 1, VK_API_VERSION_1_1);
+    vk::ApplicationInfo appInfo("GBAStation-flycast", 1, "Flycast", 1, VK_API_VERSION_1_1);
 
     std::vector<const char*> extensions = {
         VK_KHR_SURFACE_EXTENSION_NAME,
@@ -440,7 +450,7 @@ bool CreateInstanceInternal()
     {
         VK_LOG_INFO("vk::createInstance begin");
         s_instance = vk::createInstance(createInfo);
-        g_ticoIcdInstance = static_cast<VkInstance>(s_instance);
+        g_GBAStationIcdInstance = static_cast<VkInstance>(s_instance);
     }
     catch (const vk::SystemError& e)
     {
@@ -463,8 +473,16 @@ bool CreateSurfaceInternal()
 #if defined(__SWITCH__)
     VK_LOG_INFO("CreateSurfaceInternal begin");
     // VK_NN_vi_surface — the Switch surface extension.
+    // Homebrew inherits the application's previous VI dimensions.  When a
+    // chainloaded title leaves it at 640x360, the compositor scales both the
+    // game and ImGui overlay to 720p, making the lower-left quadrant appear
+    // as a doubled fullscreen image.  Flycast always owns a 720p landscape
+    // output surface.
+    if (!s_nwindow)
+        s_nwindow = nwindowGetDefault();
+    nwindowSetDimensions(s_nwindow, 1280, 720);
     vk::ViSurfaceCreateInfoNN createInfo;
-    createInfo.window = s_nwindow ? s_nwindow : nwindowGetDefault();
+    createInfo.window = s_nwindow;
 
     try
     {
@@ -912,12 +930,32 @@ void EndFrame()
                          vk::PipelineStageFlagBits::eAllCommands,
                          vk::PipelineStageFlagBits::eTransfer);
 
-        // Blit core's image → swap image. Image-to-image blit handles
-        // R8G8B8A8 ↔ B8G8R8A8 swizzles automatically. Source extent comes
-        // from the most recent video_refresh callback (retro_vulkan_image
-        // itself doesn't carry it).
-        const uint32_t srcW = s_sourceExtent.width  ? s_sourceExtent.width  : s_swapExtent.width;
-        const uint32_t srcH = s_sourceExtent.height ? s_sourceExtent.height : s_swapExtent.height;
+        // Blit core's image → swap image. Prefer the exact backing-image
+        // extent supplied by our core. The AV/video_refresh extent is merely
+        // logical and becomes wrong when Flycast renders above 480p.
+        const auto* imageExtent = static_cast<const GBAStationImageExtent*>(
+            sourceImage->create_info.pNext);
+        const bool hasImageExtent = imageExtent &&
+            imageExtent->magic == kGBAStationImageExtentMagic &&
+            imageExtent->width > 0 && imageExtent->height > 0;
+        const uint32_t srcW = hasImageExtent ? imageExtent->width :
+            (s_sourceExtent.width ? s_sourceExtent.width : s_swapExtent.width);
+        const uint32_t srcH = hasImageExtent ? imageExtent->height :
+            (s_sourceExtent.height ? s_sourceExtent.height : s_swapExtent.height);
+        static uint32_t lastSrcW = 0;
+        static uint32_t lastSrcH = 0;
+        static uint32_t lastLogicalW = 0;
+        static uint32_t lastLogicalH = 0;
+        if (srcW != lastSrcW || srcH != lastSrcH ||
+            s_sourceExtent.width != lastLogicalW || s_sourceExtent.height != lastLogicalH)
+        {
+            VK_LOG_INFO("blit source=%ux%u logical=%ux%u exact=%d", srcW, srcH,
+                        s_sourceExtent.width, s_sourceExtent.height, hasImageExtent ? 1 : 0);
+            lastSrcW = srcW;
+            lastSrcH = srcH;
+            lastLogicalW = s_sourceExtent.width;
+            lastLogicalH = s_sourceExtent.height;
+        }
 
         // Destination rect: the overlay's screen-size/display-mode selection,
         // or the full swapchain when none is set. When it doesn't cover the
@@ -1375,4 +1413,4 @@ void SetGameViewport(int x, int y, int width, int height)
                                              static_cast<uint32_t>(height)}};
 }
 
-}  // namespace TicoVulkan
+}  // namespace GBAStationVulkan

@@ -11,12 +11,12 @@
 #include <sys/stat.h>
 #endif
 
-namespace Tico {
+namespace GBAStation {
 /// Generic line-oriented log sink injected into the emulator-agnostic layer
-/// (Tico::Main / Tico::CoreRuntime). FlycastEntry wraps the project Logger in
+/// (GBAStation::Main / GBAStation::CoreRuntime). FlycastEntry wraps the project Logger in
 /// one of these so the generic code need not know about the macro logger.
 using LogCallback = std::function<void(const std::string &)>;
-}  // namespace Tico
+}  // namespace GBAStation
 
 class Logger {
 public:

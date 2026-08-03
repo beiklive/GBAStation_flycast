@@ -1,5 +1,5 @@
-/// @file TicoAudio.h
-/// @brief Reusable audio manager for Tico libretro frontend
+/// @file GBAStationAudio.h
+/// @brief Reusable audio manager for GBAStation libretro frontend
 /// Uses callback-based audio with ring buffer and resampling
 
 #pragma once
@@ -10,15 +10,15 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
-#include "TicoConfig.h"
-#include "TicoLogger.h"
+#include "GBAStationConfig.h"
+#include "GBAStationLogger.h"
 
 /// Thread-safe lock-free ring buffer for audio samples
 template <typename T>
-class TicoRingBuffer
+class GBAStationRingBuffer
 {
 public:
-    explicit TicoRingBuffer(size_t size) : m_buffer(size), m_head(0), m_tail(0) {}
+    explicit GBAStationRingBuffer(size_t size) : m_buffer(size), m_head(0), m_tail(0) {}
 
     void Write(const T *data, size_t count)
     {
@@ -100,7 +100,7 @@ private:
 
 /// Audio manager for libretro cores
 /// Uses Mix_HookMusic for callback-based audio with natural backpressure
-class TicoAudio
+class GBAStationAudio
 {
 public:
     static constexpr int SAMPLE_RATE = 44100;
@@ -108,10 +108,10 @@ public:
     static constexpr size_t BUFFER_SIZE = SAMPLE_RATE * 4; // ~4 seconds buffer (RingBuffer capacity)
     static constexpr size_t QUEUE_THRESHOLD = 4096 * 2;    // ~46ms latency target (SDL_QueueAudio)
 
-    TicoAudio() : m_buffer(BUFFER_SIZE), m_resampler(nullptr), m_deviceId(0),
+    GBAStationAudio() : m_buffer(BUFFER_SIZE), m_resampler(nullptr), m_deviceId(0),
                   m_initialized(false), m_paused(false), m_coreSampleRate(SAMPLE_RATE) {}
 
-    ~TicoAudio()
+    ~GBAStationAudio()
     {
         Shutdown();
     }
@@ -124,7 +124,7 @@ public:
 
         s_instance = this;
 
-        if (TicoConfig::USE_SDLQUEUEAUDIO)
+        if (GBAStationConfig::USE_SDLQUEUEAUDIO)
         {
             if (deviceId == 0)
             {
@@ -153,7 +153,7 @@ public:
         if (!m_initialized)
             return;
 
-        if (TicoConfig::USE_SDLQUEUEAUDIO)
+        if (GBAStationConfig::USE_SDLQUEUEAUDIO)
         {
             SDL_PauseAudioDevice(m_deviceId, 1);
             SDL_CloseAudioDevice(m_deviceId);
@@ -213,13 +213,13 @@ public:
     /// Push a single audio sample (left, right)
     void PushSample(int16_t left, int16_t right)
     {
-        if (!m_initialized)
+        if (!m_initialized || m_fastForward)
             return;
 
         int16_t samples[2] = {left, right};
         MixTrophy(samples, 2);
 
-        if (TicoConfig::USE_SDLQUEUEAUDIO)
+        if (GBAStationConfig::USE_SDLQUEUEAUDIO)
         {
             // Block if queue full (backpressure)
             while (SDL_GetQueuedAudioSize(m_deviceId) > QUEUE_THRESHOLD && !m_paused)
@@ -244,6 +244,8 @@ public:
     {
         if (!m_initialized || !data || frames == 0)
             return 0;
+        if (m_fastForward)
+            return frames;
 
         size_t samplesNeeded = frames * CHANNELS;
         const bool mixTrophy = m_trophyActive.load(std::memory_order_relaxed);
@@ -254,7 +256,7 @@ public:
             data = m_mixScratch.data();
         }
 
-        if (TicoConfig::USE_SDLQUEUEAUDIO)
+        if (GBAStationConfig::USE_SDLQUEUEAUDIO)
         {
             // Block if queue full (backpressure)
             while (SDL_GetQueuedAudioSize(m_deviceId) > QUEUE_THRESHOLD && !m_paused)
@@ -279,7 +281,7 @@ public:
     /// Flush/clear the audio buffer (for state loading, etc.)
     void Flush()
     {
-        if (TicoConfig::USE_SDLQUEUEAUDIO)
+        if (GBAStationConfig::USE_SDLQUEUEAUDIO)
         {
             SDL_ClearQueuedAudio(m_deviceId);
         }
@@ -297,6 +299,7 @@ public:
     /// Pause/unpause
     void SetPaused(bool paused) { m_paused = paused; }
     bool IsPaused() const { return m_paused; }
+    void SetFastForward(bool fastForward) { m_fastForward = fastForward; }
 
     //--------------------------------------------------------------------------
     // RetroAchievements trophy SFX
@@ -364,8 +367,8 @@ public:
         m_trophyActive.store(true, std::memory_order_relaxed);
     }
 
-    // Static forwarders so TicoCore can trigger the chime without plumbing a
-    // TicoAudio pointer through the core.
+    // Static forwarders so GBAStationCore can trigger the chime without plumbing a
+    // GBAStationAudio pointer through the core.
     static bool LoadTrophyGlobal(const char *path) { return s_instance ? s_instance->LoadTrophy(path) : false; }
     static void PlayTrophyGlobal() { if (s_instance) s_instance->PlayTrophy(); }
 
@@ -395,7 +398,7 @@ private:
     /// SDL_mixer callback - pulls audio when needed
     static void AudioCallback(void *userdata, uint8_t *stream, int len)
     {
-        TicoAudio *self = static_cast<TicoAudio *>(userdata);
+        GBAStationAudio *self = static_cast<GBAStationAudio *>(userdata);
         if (!self)
         {
             memset(stream, 0, len);
@@ -446,11 +449,12 @@ private:
         }
     }
 
-    TicoRingBuffer<int16_t> m_buffer;
+    GBAStationRingBuffer<int16_t> m_buffer;
     SDL_AudioStream *m_resampler;
     SDL_AudioDeviceID m_deviceId;
     bool m_initialized;
     bool m_paused;
+    bool m_fastForward = false;
     int m_coreSampleRate;
 
     // Trophy SFX (mixed into the output stream by MixTrophy).
@@ -459,6 +463,6 @@ private:
     std::atomic<size_t> m_trophyCursor{0};
     std::atomic<bool> m_trophyActive{false};
 
-    // Set in Init() so TicoCore can reach the live instance for trophy SFX.
-    inline static TicoAudio *s_instance = nullptr;
+    // Set in Init() so GBAStationCore can reach the live instance for trophy SFX.
+    inline static GBAStationAudio *s_instance = nullptr;
 };

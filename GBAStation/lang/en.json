@@ -1,7 +1,11 @@
 {
+    "emulator_resume": "Resume Game",
     "emulator_save_state": "Save State",
     "emulator_load_state": "Load State",
     "emulator_settings": "Settings",
+    "emulator_video_settings": "Video Settings",
+    "emulator_core_settings": "Core Settings",
+    "emulator_cheats": "Cheats",
     "emulator_exit_game": "Exit Game",
     "emulator_select_disc": "Select Disc",
     "emulator_slot": "Slot %d (%s)",

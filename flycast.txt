@@ -1,10 +1,10 @@
-[INFO][HOME] tico-flycast (Vulkan) starting
+[INFO][HOME] GBAStation-flycast (Vulkan) starting
 [INFO][DISPLAY] Mode → Handheld (1280×720 crop)
 [INFO][VK] VkInstance created (2 extensions)
 [INFO][VK] VkSurfaceKHR created via VI_NN
-[DEBUG][CORE] Loaded 91 options from sdmc:/tico/config/cores/flycast.jsonc
-[DEBUG][CORE] RA: Found accounts.jsonc at sdmc:/tico/config/accounts.jsonc
-[DEBUG][CORE] RA: Config loaded (Enabled: 1, User: ticoverse, HasToken: 1, HasPassword: 1)
+[DEBUG][CORE] Loaded 91 options from sdmc:/GBAStation/config/cores/flycast.jsonc
+[DEBUG][CORE] RA: Found accounts.jsonc at sdmc:/GBAStation/config/accounts.jsonc
+[DEBUG][CORE] RA: Config loaded (Enabled: 1, User: GBAStationverse, HasToken: 1, HasPassword: 1)
 [DEBUG][CORE] RA: Disabled on Switch during Vulkan bring-up
 [DEBUG][CORE] Config loaded, 91 options
 [DEBUG][CORE] RA: Failed to load trophy.mp3 -> Audio device hasn't been opened
@@ -13,16 +13,16 @@
 [DEBUG][CORE_INFO] core/hw/mem/addrspace.cpp:425 N[VMEM]: Info: nvmem is enabled
 [DEBUG][CORE_INFO] core/hw/mem/addrspace.cpp:457 N[VMEM]: BASE 0x92632000 RAM(16 MB) 0x9e632000 VRAM64(8 MB) 0x96632000 ARAM(2 MB) 0xb2632000
 [DEBUG][CORE] Initialized: Flycast 185062196
-[INFO][HOME] Loading ROM: sdmc:/tico/roms/dc/Sonic Adventure (USA)/Sonic Adventure (USA).cue
-[DEBUG][CORE] LoadGame: Enter: sdmc:/tico/roms/dc/Sonic Adventure (USA)/Sonic Adventure (USA).cue
+[INFO][HOME] Loading ROM: sdmc:/GBAStation/roms/dc/Sonic Adventure (USA)/Sonic Adventure (USA).cue
+[DEBUG][CORE] LoadGame: Enter: sdmc:/GBAStation/roms/dc/Sonic Adventure (USA)/Sonic Adventure (USA).cue
 [DEBUG][CORE] LoadGame: Opening file...
 [DEBUG][CORE] LoadGame: ROM size: 357 bytes
 [DEBUG][CORE] LoadGame: ROM data read successfully
 [DEBUG][CORE] LoadGame: Calling retro_load_game...
-[DEBUG][CORE]   gameInfo.path = sdmc:/tico/roms/dc/Sonic Adventure (USA)/Sonic Adventure (USA).cue
+[DEBUG][CORE]   gameInfo.path = sdmc:/GBAStation/roms/dc/Sonic Adventure (USA)/Sonic Adventure (USA).cue
 [DEBUG][CORE]   gameInfo.size = 357
 [DEBUG][CORE]   gameInfo.data = 0xa6c5e8f60
-[DEBUG][CORE_INFO] shell/libretro/libretro.cpp:2075 N[BOOT]: retro_load_game: sdmc:/tico/roms/dc/Sonic Adventure (USA)/Sonic Adventure (USA).cue
+[DEBUG][CORE_INFO] shell/libretro/libretro.cpp:2075 N[BOOT]: retro_load_game: sdmc:/GBAStation/roms/dc/Sonic Adventure (USA)/Sonic Adventure (USA).cue
 [DEBUG][CORE_INFO] File extension is: .cue
 [DEBUG][CORE] HW render requested: Vulkan 4194304.0
 [DEBUG][CORE] Vulkan negotiation interface registered (ver=1)
@@ -54,7 +54,7 @@
 [INFO][HOME] Controller opened
 [INFO][HOME] Exit combo (+/-) detected
 [INFO][HOME] Shutting down
-[DEBUG][CORE] ~TicoCore: destroying (gameLoaded=1, initialized=1, hwRender=1)
+[DEBUG][CORE] ~GBAStationCore: destroying (gameLoaded=1, initialized=1, hwRender=1)
 [DEBUG][CORE_INFO] shell/switch/libnx_vmem.cpp:141 N[VMEM]: virtmem::destroy done
-[INFO][HOME] Chainloading back to sdmc:/switch/tico.nro
+[INFO][HOME] Chainloading back to sdmc:/switch/GBAStation.nro
 [INFO][HOME] Clean exit

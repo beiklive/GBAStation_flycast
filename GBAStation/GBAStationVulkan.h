@@ -1,4 +1,4 @@
-/// @file TicoVulkan.h
+/// @file GBAStationVulkan.h
 /// @brief Vulkan frontend that backs the libretro hw_render interface.
 ///
 /// Owns the VkInstance/VkDevice/VkSurface/swapchain. Flycast's libretro core
@@ -20,7 +20,7 @@ struct ImDrawData;
 #include <switch.h>
 #endif
 
-namespace TicoVulkan
+namespace GBAStationVulkan
 {
 
 // Bring up VkInstance + VkSurface. Must be called BEFORE retro_init() so the
@@ -72,7 +72,7 @@ void SetGameViewport(int x, int y, int width, int height);
 // True once the device + swapchain are ready (post-CreateDeviceAndSwapchain).
 bool IsReady();
 
-// ImGui/Tico overlay renderer. Init must be called after an ImGui context
+// ImGui/GBAStation overlay renderer. Init must be called after an ImGui context
 // exists and after CreateDeviceAndSwapchain().
 bool InitOverlayRenderer();
 void ShutdownOverlayRenderer();
@@ -81,4 +81,4 @@ void SetOverlayDrawData(ImDrawData* drawData);
 ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, uint32_t height);
 void DestroyOverlayTexture(ImTextureID texture);
 
-}  // namespace TicoVulkan
+}  // namespace GBAStationVulkan

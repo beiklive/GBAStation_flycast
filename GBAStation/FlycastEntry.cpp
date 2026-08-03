@@ -1,11 +1,11 @@
 /// @file FlycastEntry.cpp
-/// @brief Process entry point for the tico-integrated Flycast NRO. Mirrors
-/// tico-ppsspp/tico/PpssppEntry.cpp: wire a log sink + the flycast runtime into
-/// the generic Tico::Main driver.
+/// @brief Process entry point for the GBAStation-integrated Flycast NRO. Mirrors
+/// GBAStation-ppsspp/GBAStation/PpssppEntry.cpp: wire a log sink + the flycast runtime into
+/// the generic GBAStation::Main driver.
 
 #include "FlycastRuntime.h"
-#include "TicoLogger.h"
-#include "TicoMain.h"
+#include "GBAStationLogger.h"
+#include "GBAStationMain.h"
 
 #ifdef __SWITCH__
 #include <switch.h>
@@ -33,11 +33,11 @@ int main(int argc, char *argv[])
     LOG_INFO("HOME", "flycast entry argc=%d build=20260802-switchvk-drmtrace-v8", argc);
 
     // Route the agnostic layer's log lines through the project macro logger.
-    Tico::LogCallback log = [](const std::string &line) {
+    GBAStation::LogCallback log = [](const std::string &line) {
         LOG_INFO("HOME", "%s", line.c_str());
     };
 
-    Tico::FlycastRuntime runtime(log);
-    Tico::Main app(runtime, log);
+    GBAStation::FlycastRuntime runtime(log);
+    GBAStation::Main app(runtime, log);
     return app.Run(argc, argv);
 }

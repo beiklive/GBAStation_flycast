@@ -1,10 +1,10 @@
-/// @file TicoCore.cpp
-/// @brief Simplified libretro frontend for Flycast with tico overlay
+/// @file GBAStationCore.cpp
+/// @brief Simplified libretro frontend for Flycast with GBAStation overlay
 /// Based on LibretroCoreStatic.cpp but stripped of multi-core switching
 
-#include "TicoCore.h"
-#include "TicoConfig.h"
-#include "TicoAudio.h"
+#include "GBAStationCore.h"
+#include "GBAStationConfig.h"
+#include "GBAStationAudio.h"
 #include "json.hpp"
 #include <SDL.h>
 #include <SDL_mixer.h>
@@ -16,7 +16,7 @@
 #include <sys/types.h>
 #include <algorithm>
 #include <cctype>
-#include "TicoLogger.h"
+#include "GBAStationLogger.h"
 #include <curl/curl.h>
 #include <thread>
 #include "rc_client.h"
@@ -26,7 +26,7 @@
 #include <switch.h>
 #endif
 
-#include "TicoVulkan.h"
+#include "GBAStationVulkan.h"
 #include <libretro_vulkan.h>
 
 // Forward declarations from imgread/common.h (full include deferred to avoid Event conflict)
@@ -35,7 +35,7 @@ Disc* OpenDisc(const std::string& path, std::vector<unsigned char>* digest);
 
 // NAOMI/Atomiswave are detected by extension (matches flycast's libretro
 // frontend). Used to keep arcade ROMs away from the disc-only code paths.
-static bool TicoIsArcadeRom(const std::string& path)
+static bool GBAStationIsArcadeRom(const std::string& path)
 {
     size_t dot = path.find_last_of('.');
     if (dot == std::string::npos)
@@ -46,7 +46,7 @@ static bool TicoIsArcadeRom(const std::string& path)
     return ext == ".lst" || ext == ".bin" || ext == ".dat" || ext == ".zip" || ext == ".7z";
 }
 
-static bool TicoIsSupportedContent(const std::string& path)
+static bool GBAStationIsSupportedContent(const std::string& path)
 {
     size_t dot = path.find_last_of('.');
     if (dot == std::string::npos)
@@ -62,7 +62,7 @@ static bool TicoIsSupportedContent(const std::string& path)
 // SRAM Handling
 //==============================================================================
 
-void TicoCore::LoadSRAM()
+void GBAStationCore::LoadSRAM()
 {
     size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
     if (!size)
@@ -81,8 +81,8 @@ void TicoCore::LoadSRAM()
     if (lastDot != std::string::npos)
         filename = filename.substr(0, lastDot);
 
-    std::string savePathVMU = std::string(TicoConfig::SAVES_PATH) + filename + ".vmu";
-    std::string savePathSRM = std::string(TicoConfig::SAVES_PATH) + filename + ".srm";
+    std::string savePathVMU = std::string(GBAStationConfig::SAVES_PATH) + filename + ".vmu";
+    std::string savePathSRM = std::string(GBAStationConfig::SAVES_PATH) + filename + ".srm";
 
     std::ifstream file(savePathVMU, std::ios::binary);
     if (file)
@@ -100,10 +100,10 @@ void TicoCore::LoadSRAM()
         return;
     }
 
-    LOG_WARN("CORE", "No SRAM file found (.vmu or .srm) at %s", TicoConfig::SAVES_PATH);
+    LOG_WARN("CORE", "No SRAM file found (.vmu or .srm) at %s", GBAStationConfig::SAVES_PATH);
 }
 
-void TicoCore::SaveSRAM()
+void GBAStationCore::SaveSRAM()
 {
     size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
     if (!size)
@@ -124,16 +124,16 @@ void TicoCore::SaveSRAM()
 
     // Ensure directory exists
     struct stat st = {0};
-    if (stat(TicoConfig::SAVES_PATH, &st) == -1)
+    if (stat(GBAStationConfig::SAVES_PATH, &st) == -1)
     {
 #ifdef __SWITCH__
-        mkdir(TicoConfig::SAVES_PATH, 0777);
+        mkdir(GBAStationConfig::SAVES_PATH, 0777);
 #else
-        mkdir(TicoConfig::SAVES_PATH, 0777);
+        mkdir(GBAStationConfig::SAVES_PATH, 0777);
 #endif
     }
 
-    std::string savePath = std::string(TicoConfig::SAVES_PATH) + filename + ".vmu";
+    std::string savePath = std::string(GBAStationConfig::SAVES_PATH) + filename + ".vmu";
 
     std::ofstream file(savePath, std::ios::binary);
     if (file)
@@ -179,7 +179,7 @@ extern "C"
 extern void retro_audio_flush_buffer(void);
 
 // Static instance for callbacks
-static TicoCore *s_instance = nullptr;
+static GBAStationCore *s_instance = nullptr;
 
 // HW render callback storage
 static retro_hw_render_callback s_hwRenderCallback = {};
@@ -209,8 +209,8 @@ static size_t CurlWriteCallback(void *contents, size_t size, size_t nmemb, void 
 }
 
 // Persistent RA worker thread entry point
-void TicoCore::RAWorkerEntry(void* arg) {
-    TicoCore* self = (TicoCore*)arg;
+void GBAStationCore::RAWorkerEntry(void* arg) {
+    GBAStationCore* self = (GBAStationCore*)arg;
 
     while (true) {
         RAJob job;
@@ -290,7 +290,7 @@ void TicoCore::RAWorkerEntry(void* arg) {
     }
 }
 
-void TicoCore::StartRAWorker() {
+void GBAStationCore::StartRAWorker() {
 #ifdef __SWITCH__
     m_raWorkerRunning = true;
     memset(&m_raThread, 0, sizeof(m_raThread));
@@ -312,7 +312,7 @@ void TicoCore::StartRAWorker() {
 #endif
 }
 
-void TicoCore::StopRAWorker() {
+void GBAStationCore::StopRAWorker() {
 #ifdef __SWITCH__
     if (!m_raThreadCreated) return;
 
@@ -333,7 +333,7 @@ static void RC_CCONV RAServerCall(const rc_api_request_t* request, rc_client_ser
 {
     if (!s_instance) return;
 
-    TicoCore::RAJob job;
+    GBAStationCore::RAJob job;
     job.url = request->url;
     if (request->post_data) job.post_data = request->post_data;
     job.callback = (void*)callback;
@@ -408,13 +408,13 @@ static void RC_CCONV RAServerCall(const rc_api_request_t* request, rc_client_ser
 // Construction
 //==============================================================================
 
-TicoCore::TicoCore()
+GBAStationCore::GBAStationCore()
 {
     memset(m_inputState, 0, sizeof(m_inputState));
     memset(m_analogState, 0, sizeof(m_analogState));
 
-    m_systemDir = TicoConfig::SYSTEM_PATH;
-    m_saveDir = TicoConfig::SAVES_PATH;
+    m_systemDir = GBAStationConfig::SYSTEM_PATH;
+    m_saveDir = GBAStationConfig::SAVES_PATH;
 
     // Per-game VMUs (overridable in flycast_settings.json). The core persists
     // them in retro_load/unload_game, so we don't do manual SRAM handling.
@@ -435,9 +435,9 @@ TicoCore::TicoCore()
     m_configOptions["reicast_threaded_rendering"] = "enabled";
 }
 
-TicoCore::~TicoCore()
+GBAStationCore::~GBAStationCore()
 {
-    LOG_CORE("~TicoCore: destroying (gameLoaded=%d, initialized=%d, hwRender=%d)",
+    LOG_CORE("~GBAStationCore: destroying (gameLoaded=%d, initialized=%d, hwRender=%d)",
              m_gameLoaded, m_initialized, m_hwRender);
 
     UnloadGame();
@@ -461,7 +461,7 @@ TicoCore::~TicoCore()
 // Initialization
 //==============================================================================
 
-bool TicoCore::Init()
+bool GBAStationCore::Init()
 {
     if (m_initialized)
         return true;
@@ -478,7 +478,7 @@ bool TicoCore::Init()
 #ifdef __SWITCH__
     std::string audioConfigPath = "sdmc:/GBAStation/config/audio.jsonc";
 #else
-    std::string audioConfigPath = "tico/config/audio.jsonc";
+    std::string audioConfigPath = "GBAStation/config/audio.jsonc";
 #endif
     std::ifstream audioIn(audioConfigPath);
     if (audioIn.is_open()) {
@@ -491,15 +491,15 @@ bool TicoCore::Init()
         audioIn.close();
     }
     if (soundEnabled) {
-        // The chime is mixed into the game's audio stream by TicoAudio (the
+        // The chime is mixed into the game's audio stream by GBAStationAudio (the
         // Switch can't open a second audio device), so it must be a WAV that
         // SDL_LoadWAV can decode device-free. See assets/trophy.wav.
 #ifdef __SWITCH__
         const char *trophyPath = "romfs:/assets/trophy.wav";
 #else
-        const char *trophyPath = "tico/assets/trophy.wav";
+        const char *trophyPath = "GBAStation/assets/trophy.wav";
 #endif
-        if (TicoAudio::LoadTrophyGlobal(trophyPath)) LOG_CORE("RA: Loaded trophy.wav successfully.");
+        if (GBAStationAudio::LoadTrophyGlobal(trophyPath)) LOG_CORE("RA: Loaded trophy.wav successfully.");
         else LOG_CORE("RA: Failed to load trophy.wav");
     }
 
@@ -523,13 +523,13 @@ bool TicoCore::Init()
                             std::string desc = event->achievement->description;
                             std::string badge = event->achievement->badge_name;
                             s_instance->PushRANotification(title, desc, badge);
-                            TicoAudio::PlayTrophyGlobal();
+                            GBAStationAudio::PlayTrophyGlobal();
                             LOG_CORE("RA: Achievement triggered: %s (badge: %s)", title.c_str(), badge.c_str());
                         }
                         break;
                     case RC_CLIENT_EVENT_GAME_COMPLETED:
                         s_instance->PushRANotification("Game Mastered!", "All achievements unlocked!", "ra_icon");
-                        TicoAudio::PlayTrophyGlobal();
+                        GBAStationAudio::PlayTrophyGlobal();
                         break;
                     case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
                         if (event->leaderboard) {
@@ -568,7 +568,7 @@ bool TicoCore::Init()
     return true;
 }
 
-bool TicoCore::InitEGLDualContext()
+bool GBAStationCore::InitEGLDualContext()
 {
     // Called by LoadGame() AFTER retro_load_game() returns. By now flycast
     // has registered SET_HW_RENDER (Vulkan) and the negotiation interface
@@ -576,18 +576,18 @@ bool TicoCore::InitEGLDualContext()
     // gets the device IT wants (with VK_EXT_provoking_vertex, anisotropy,
     // etc.), then create the swapchain. After this returns, context_reset
     // can call GET_HW_RENDER_INTERFACE on us.
-    if (TicoVulkan::IsReady())
+    if (GBAStationVulkan::IsReady())
         return true;
-    if (!TicoVulkan::CreateDeviceAndSwapchain())
+    if (!GBAStationVulkan::CreateDeviceAndSwapchain())
     {
-        LOG_ERROR("CORE", "TicoVulkan::CreateDeviceAndSwapchain failed");
+        LOG_ERROR("CORE", "GBAStationVulkan::CreateDeviceAndSwapchain failed");
         return false;
     }
     LOG_CORE("Vulkan device + swapchain ready");
     return true;
 }
 
-void TicoCore::BindHWContext(bool /*enable*/)
+void GBAStationCore::BindHWContext(bool /*enable*/)
 {
     // No-op for Vulkan.
 }
@@ -596,9 +596,9 @@ void TicoCore::BindHWContext(bool /*enable*/)
 // Game Loading
 //==============================================================================
 
-// Debug logging helper removed - using TicoLogger.h
+// Debug logging helper removed - using GBAStationLogger.h
 
-bool TicoCore::LoadGame(const std::string &path)
+bool GBAStationCore::LoadGame(const std::string &path)
 {
     LOG_CORE("LoadGame: Enter: %s", path.c_str());
 
@@ -615,7 +615,7 @@ bool TicoCore::LoadGame(const std::string &path)
         }
     }
 
-    if (!TicoIsSupportedContent(path))
+    if (!GBAStationIsSupportedContent(path))
     {
         LOG_ERROR("CORE", "LoadGame: Unsupported content extension: %s", path.c_str());
         return false;
@@ -644,7 +644,7 @@ bool TicoCore::LoadGame(const std::string &path)
     // Pre-open a separate disc (own FILE* handles) for RA hashing before the
     // emulator starts. Arcade ROMs have no disc -- they hash by name in
     // RAIdentifyGame, and OpenDisc() would throw on them.
-    if (m_raEnabled && TicoIsArcadeRom(path)) {
+    if (m_raEnabled && GBAStationIsArcadeRom(path)) {
         m_raHashDisc = nullptr;
     }
     else if (m_raEnabled) {
@@ -720,7 +720,7 @@ bool TicoCore::LoadGame(const std::string &path)
             LOG_CORE("RA: Beginning login with token...");
             rc_client_begin_login_with_token(m_rcClient, m_raUsername.c_str(), m_raToken.c_str(),
                 [](int res, const char* err, rc_client_t* c, void* ud) {
-                    TicoCore* core = (TicoCore*)ud;
+                    GBAStationCore* core = (GBAStationCore*)ud;
                     if (res == RC_OK) {
                         LOG_CORE("RA: Token login successful!");
                         RAIdentifyGame(c, core);
@@ -740,7 +740,7 @@ bool TicoCore::LoadGame(const std::string &path)
     return true;
 }
 
-void TicoCore::UnloadGame()
+void GBAStationCore::UnloadGame()
 {
     if (!m_gameLoaded)
         return;
@@ -755,7 +755,7 @@ void TicoCore::UnloadGame()
 // Frame execution
 //==============================================================================
 
-void TicoCore::RunFrame()
+void GBAStationCore::RunFrame()
 {
     if (!m_gameLoaded || m_paused)
         return;
@@ -804,13 +804,13 @@ void TicoCore::RunFrame()
     }
 }
 
-void TicoCore::ResizeFBO(int /*width*/, int /*height*/)
+void GBAStationCore::ResizeFBO(int /*width*/, int /*height*/)
 {
     // Vulkan path: flycast core manages its own offscreen images via
     // VulkanContext::PresentFrame. There's no frontend-side FBO to size.
 }
 
-void TicoCore::Reset()
+void GBAStationCore::Reset()
 {
     if (m_gameLoaded)
     {
@@ -818,10 +818,10 @@ void TicoCore::Reset()
     }
 }
 
-void TicoCore::Pause() { m_paused = true; }
-void TicoCore::Resume() { m_paused = false; }
+void GBAStationCore::Pause() { m_paused = true; }
+void GBAStationCore::Resume() { m_paused = false; }
 
-void TicoCore::DestroyHWContext()
+void GBAStationCore::DestroyHWContext()
 {
     if (!m_hwContextActive)
         return;
@@ -839,7 +839,7 @@ void TicoCore::DestroyHWContext()
 // Input
 //==============================================================================
 
-void TicoCore::SetInputState(unsigned port, unsigned id, bool pressed)
+void GBAStationCore::SetInputState(unsigned port, unsigned id, bool pressed)
 {
     if (port < 4 && id < 16)
     {
@@ -847,7 +847,7 @@ void TicoCore::SetInputState(unsigned port, unsigned id, bool pressed)
     }
 }
 
-void TicoCore::SetAnalogState(unsigned port, unsigned index, unsigned id, int16_t value)
+void GBAStationCore::SetAnalogState(unsigned port, unsigned index, unsigned id, int16_t value)
 {
     if (port < 4 && index < 2 && id < 2)
     {
@@ -855,7 +855,7 @@ void TicoCore::SetAnalogState(unsigned port, unsigned index, unsigned id, int16_
     }
 }
 
-void TicoCore::ClearInputs()
+void GBAStationCore::ClearInputs()
 {
     memset(m_inputState, 0, sizeof(m_inputState));
     memset(m_analogState, 0, sizeof(m_analogState));
@@ -865,7 +865,7 @@ void TicoCore::ClearInputs()
 // Save States
 //==============================================================================
 
-void TicoCore::SaveState(const std::string &path)
+void GBAStationCore::SaveState(const std::string &path)
 {
     if (!m_gameLoaded)
         return;
@@ -900,7 +900,7 @@ void TicoCore::SaveState(const std::string &path)
     }
 }
 
-void TicoCore::LoadState(const std::string &path)
+void GBAStationCore::LoadState(const std::string &path)
 {
     if (!m_gameLoaded)
         return;
@@ -961,14 +961,14 @@ void TicoCore::LoadState(const std::string &path)
 // Libretro Callbacks
 //==============================================================================
 
-bool TicoCore::EnvironmentCallback(unsigned cmd, void *data)
+bool GBAStationCore::EnvironmentCallback(unsigned cmd, void *data)
 {
     if (!s_instance)
         return false;
     return s_instance->HandleEnvironment(cmd, data);
 }
 
-void TicoCore::VideoRefreshCallback(const void *data, unsigned width,
+void GBAStationCore::VideoRefreshCallback(const void *data, unsigned width,
                                     unsigned height, size_t pitch)
 {
     if (!s_instance)
@@ -976,7 +976,7 @@ void TicoCore::VideoRefreshCallback(const void *data, unsigned width,
     s_instance->HandleVideoRefresh(data, width, height, pitch);
 }
 
-void TicoCore::AudioSampleCallback(int16_t left, int16_t right)
+void GBAStationCore::AudioSampleCallback(int16_t left, int16_t right)
 {
     if (s_instance && s_instance->m_audioSampleCallback)
     {
@@ -984,7 +984,7 @@ void TicoCore::AudioSampleCallback(int16_t left, int16_t right)
     }
 }
 
-size_t TicoCore::AudioSampleBatchCallback(const int16_t *data, size_t frames)
+size_t GBAStationCore::AudioSampleBatchCallback(const int16_t *data, size_t frames)
 {
     if (s_instance && s_instance->m_audioSampleBatchCallback)
     {
@@ -993,12 +993,12 @@ size_t TicoCore::AudioSampleBatchCallback(const int16_t *data, size_t frames)
     return frames;
 }
 
-void TicoCore::InputPollCallback()
+void GBAStationCore::InputPollCallback()
 {
     // Input is polled externally
 }
 
-int16_t TicoCore::InputStateCallback(unsigned port, unsigned device,
+int16_t GBAStationCore::InputStateCallback(unsigned port, unsigned device,
                                      unsigned index, unsigned id)
 {
     if (!s_instance)
@@ -1006,9 +1006,9 @@ int16_t TicoCore::InputStateCallback(unsigned port, unsigned device,
     return s_instance->HandleInputState(port, device, index, id);
 }
 
-void TicoCore::LogCallback(enum retro_log_level level, const char *fmt, ...)
+void GBAStationCore::LogCallback(enum retro_log_level level, const char *fmt, ...)
 {
-    // Map retro level to Tico level
+    // Map retro level to GBAStation level
     const char *levelStr = "CORE";
     if (level == RETRO_LOG_ERROR)
         levelStr = "CORE_ERR";
@@ -1040,7 +1040,7 @@ void TicoCore::LogCallback(enum retro_log_level level, const char *fmt, ...)
 // Instance Callbacks
 //==============================================================================
 
-bool TicoCore::HandleEnvironment(unsigned cmd, void *data)
+bool GBAStationCore::HandleEnvironment(unsigned cmd, void *data)
 {
     switch (cmd)
     {
@@ -1112,14 +1112,14 @@ bool TicoCore::HandleEnvironment(unsigned cmd, void *data)
             LOG_WARN("CORE", "Negotiation interface rejected (wrong type)");
             return false;
         }
-        TicoVulkan::SetNegotiationInterface(iface);
+        GBAStationVulkan::SetNegotiationInterface(iface);
         LOG_CORE("Vulkan negotiation interface registered (ver=%u)", iface->interface_version);
         return true;
     }
 
     case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE:
     {
-        const auto *hwIface = TicoVulkan::GetHwRenderInterface();
+        const auto *hwIface = GBAStationVulkan::GetHwRenderInterface();
         if (!hwIface)
         {
             LOG_WARN("CORE", "GET_HW_RENDER_INTERFACE called before Vulkan ready");
@@ -1147,7 +1147,7 @@ bool TicoCore::HandleEnvironment(unsigned cmd, void *data)
             if (it != m_configOptions.end())
             {
                 var->value = it->second.c_str();
-                // printf("[TicoCore] GET_VARIABLE: %s -> %s\n", var->key, var->value);
+                // printf("[GBAStationCore] GET_VARIABLE: %s -> %s\n", var->key, var->value);
                 return true;
             }
         }
@@ -1259,21 +1259,21 @@ bool TicoCore::HandleEnvironment(unsigned cmd, void *data)
     return false;
 }
 
-void TicoCore::HandleVideoRefresh(const void *data, unsigned width,
+void GBAStationCore::HandleVideoRefresh(const void *data, unsigned width,
                                   unsigned height, size_t /*pitch*/)
 {
     // Vulkan path: data is RETRO_HW_FRAME_BUFFER_VALID for hw-rendered
-    // frames, and the actual image arrives via TicoVulkan's set_image
+    // frames, and the actual image arrives via GBAStationVulkan's set_image
     // callback. We track the dimensions both for aspect ratio AND so
-    // TicoVulkan knows the source extent for the swapchain blit.
+    // GBAStationVulkan knows the source extent for the swapchain blit.
     if (!data && !m_hwRender)
         return;
     m_frameWidth = width;
     m_frameHeight = height;
-    TicoVulkan::SetSourceExtent(width, height);
+    GBAStationVulkan::SetSourceExtent(width, height);
 }
 
-int16_t TicoCore::HandleInputState(unsigned port, unsigned device,
+int16_t GBAStationCore::HandleInputState(unsigned port, unsigned device,
                                    unsigned index, unsigned id)
 {
     if (port >= 4)
@@ -1301,7 +1301,7 @@ int16_t TicoCore::HandleInputState(unsigned port, unsigned device,
 // Configuration
 //==============================================================================
 
-void TicoCore::LoadConfig()
+void GBAStationCore::LoadConfig()
 {
     if (m_configLoaded)
         return;
@@ -1310,8 +1310,63 @@ void TicoCore::LoadConfig()
 #ifdef __SWITCH__
     configPath = "sdmc:/GBAStation/config/cores/flycast.jsonc";
 #else
-    configPath = "tico/config/cores/flycast.jsonc";
+    configPath = "GBAStation/config/cores/flycast.jsonc";
 #endif
+
+    // config.cfg is the frontend-owned transport for per-core settings.  The
+    // JSON file remains the persistent source of defaults, then explicit
+    // `core.flycast.reicast_*` values override it for this launch.
+    const auto applyGBAStationOverrides = [this]() {
+        const char *paths[] = {"sdmc:/GBAStation/config/config.cfg", "/GBAStation/config/config.cfg"};
+        const auto decode = [](std::string value) {
+            if (value.size() <= 2 || value[0] != 's' || value[1] != '|')
+                return value;
+            std::string decoded;
+            bool escaped = false;
+            for (std::size_t i = 2; i < value.size(); ++i)
+            {
+                const char ch = value[i];
+                if (escaped)
+                {
+                    decoded.push_back(ch);
+                    escaped = false;
+                }
+                else if (ch == '\\')
+                    escaped = true;
+                else
+                    decoded.push_back(ch);
+            }
+            if (escaped)
+                decoded.push_back('\\');
+            return decoded;
+        };
+        unsigned count = 0;
+        for (const char *path : paths)
+        {
+            std::ifstream input(path);
+            if (!input.good())
+                continue;
+            std::string line;
+            while (std::getline(input, line))
+            {
+                const std::size_t equals = line.find('=');
+                if (equals == std::string::npos)
+                    continue;
+                const std::string key = line.substr(0, equals);
+                static constexpr const char *prefix = "core.flycast.";
+                static constexpr std::size_t prefixSize = sizeof("core.flycast.") - 1;
+                if (key.compare(0, prefixSize, prefix) != 0)
+                    continue;
+                const std::string option = key.substr(prefixSize);
+                if (option.rfind("reicast_", 0) != 0)
+                    continue;
+                m_configOptions[option] = decode(line.substr(equals + 1));
+                ++count;
+            }
+            LOG_CORE("Applied %u Flycast config.cfg core overrides from %s", count, path);
+            return;
+        }
+    };
 
     std::ifstream f(configPath);
     if (!f.good())
@@ -1420,6 +1475,7 @@ void TicoCore::LoadConfig()
                 m_configOptions[el.key()] = el.value().get<std::string>();
             }
         }
+        applyGBAStationOverrides();
         m_configLoaded = true;
         return;
     }
@@ -1444,11 +1500,12 @@ void TicoCore::LoadConfig()
         }
     }
 
+    applyGBAStationOverrides();
     m_configLoaded = true;
     LOG_CORE("Loaded %lu options from %s", m_configOptions.size(), configPath);
 }
 
-std::string TicoCore::GetConfigValue(const std::string &key, const std::string &defaultVal)
+std::string GBAStationCore::GetConfigValue(const std::string &key, const std::string &defaultVal)
 {
     auto it = m_configOptions.find(key);
     if (it != m_configOptions.end())
@@ -1462,21 +1519,21 @@ std::string TicoCore::GetConfigValue(const std::string &key, const std::string &
 // Disk Control
 //==============================================================================
 
-unsigned TicoCore::GetDiskCount() const
+unsigned GBAStationCore::GetDiskCount() const
 {
     if (!m_hasDiskControl || !m_diskControl.get_num_images)
         return 0;
     return m_diskControl.get_num_images();
 }
 
-unsigned TicoCore::GetCurrentDiskIndex() const
+unsigned GBAStationCore::GetCurrentDiskIndex() const
 {
     if (!m_hasDiskControl || !m_diskControl.get_image_index)
         return 0;
     return m_diskControl.get_image_index();
 }
 
-bool TicoCore::SwapDisk(unsigned index)
+bool GBAStationCore::SwapDisk(unsigned index)
 {
     if (!m_hasDiskControl || !m_diskControl.set_eject_state ||
         !m_diskControl.set_image_index)
@@ -1507,7 +1564,7 @@ bool TicoCore::SwapDisk(unsigned index)
     return true;
 }
 
-bool TicoCore::GetDiskLabel(unsigned index, std::string &label) const
+bool GBAStationCore::GetDiskLabel(unsigned index, std::string &label) const
 {
     if (!m_hasDiskControl || !m_diskControl.get_image_label)
         return false;
@@ -1521,7 +1578,7 @@ bool TicoCore::GetDiskLabel(unsigned index, std::string &label) const
     return false;
 }
 
-bool TicoCore::SwapDiskByPath(const std::string &discPath)
+bool GBAStationCore::SwapDiskByPath(const std::string &discPath)
 {
     if (!m_hasDiskControl || !m_diskControl.set_eject_state ||
         !m_diskControl.replace_image_index || !m_diskControl.set_image_index)
@@ -1547,7 +1604,7 @@ bool TicoCore::SwapDiskByPath(const std::string &discPath)
 // RetroAchievements Functionality
 //==============================================================================
 
-void TicoCore::LoadRAConfig() {
+void GBAStationCore::LoadRAConfig() {
     m_raEnabled = false;
     m_raHardcore = false;
     m_raUsername = "";
@@ -1557,7 +1614,7 @@ void TicoCore::LoadRAConfig() {
 #ifdef __SWITCH__
     std::string configPath = "sdmc:/GBAStation/config/accounts.jsonc";
 #else
-    std::string configPath = "tico/config/accounts.jsonc";
+    std::string configPath = "GBAStation/config/accounts.jsonc";
 #endif
 
     std::ifstream file(configPath);
@@ -1589,13 +1646,13 @@ void TicoCore::LoadRAConfig() {
     }
 }
 
-void TicoCore::SaveRAToken(const std::string& token) {
+void GBAStationCore::SaveRAToken(const std::string& token) {
     m_raToken = token;
 
 #ifdef __SWITCH__
     std::string configPath = "sdmc:/GBAStation/config/accounts.jsonc";
 #else
-    std::string configPath = "tico/config/accounts.jsonc";
+    std::string configPath = "GBAStation/config/accounts.jsonc";
 #endif
 
     std::ifstream in(configPath);
@@ -1616,10 +1673,10 @@ void TicoCore::SaveRAToken(const std::string& token) {
     }
 }
 
-void TicoCore::RALoginWithPassword(rc_client_t* c, TicoCore* core) {
+void GBAStationCore::RALoginWithPassword(rc_client_t* c, GBAStationCore* core) {
     rc_client_begin_login_with_password(c, core->m_raUsername.c_str(), core->m_raPassword.c_str(),
         [](int res, const char* err, rc_client_t* cc, void* ud) {
-            TicoCore* self = (TicoCore*)ud;
+            GBAStationCore* self = (GBAStationCore*)ud;
             if (res == RC_OK) {
                 LOG_CORE("RA: Password login successful!");
                 const rc_client_user_t* user = rc_client_get_user_info(cc);
@@ -1645,7 +1702,7 @@ static Disc* s_hashDisk = nullptr;
 // cdreader handles this by computing track_first_sector from the raw sector header MSF.
 // We replicate that behavior here, reading directly from the track BIN file.
 
-struct TicoRATrack {
+struct GBAStationRATrack {
     hostfs::File* file;    // The track's BIN file (borrowed from RawTrackFile)
     uint32_t sector_size;  // 2352, 2048, 2336
     uint32_t header_size;  // Bytes to skip to get 2048-byte user data (16 for MODE1/2352, 24 for MODE2/2352, 0 for 2048)
@@ -1661,7 +1718,7 @@ static uint32_t msf_to_lba(const uint8_t header[16]) {
     return (uint32_t)(((minutes * 60) + seconds) * 75 + frames - 150);
 }
 
-static void* tico_cdreader_open_track(const char* path, uint32_t track) {
+static void* GBAStation_cdreader_open_track(const char* path, uint32_t track) {
     if (!s_hashDisk) return nullptr;
 
     // Find the Track object
@@ -1679,7 +1736,7 @@ static void* tico_cdreader_open_track(const char* path, uint32_t track) {
     RawTrackFile* rtf = dynamic_cast<RawTrackFile*>(t->file);
     if (!rtf) return nullptr;
 
-    TicoRATrack* rat = new TicoRATrack();
+    GBAStationRATrack* rat = new GBAStationRATrack();
     rat->file = rtf->file;
     rat->sector_size = rtf->fmt;
     rat->owns_file = false;
@@ -1730,8 +1787,8 @@ static void* tico_cdreader_open_track(const char* path, uint32_t track) {
     return rat;
 }
 
-static size_t tico_cdreader_read_sector(void* track_handle, uint32_t sector, void* buffer, size_t requested_bytes) {
-    TicoRATrack* rat = static_cast<TicoRATrack*>(track_handle);
+static size_t GBAStation_cdreader_read_sector(void* track_handle, uint32_t sector, void* buffer, size_t requested_bytes) {
+    GBAStationRATrack* rat = static_cast<GBAStationRATrack*>(track_handle);
     if (!rat || !rat->file) return 0;
 
     if (sector < rat->first_sector) return 0;
@@ -1757,24 +1814,24 @@ static size_t tico_cdreader_read_sector(void* track_handle, uint32_t sector, voi
     return nread;
 }
 
-static void tico_cdreader_close_track(void* track_handle) {
-    TicoRATrack* rat = static_cast<TicoRATrack*>(track_handle);
+static void GBAStation_cdreader_close_track(void* track_handle) {
+    GBAStationRATrack* rat = static_cast<GBAStationRATrack*>(track_handle);
     if (rat) {
         // Don't close the file — it belongs to the Disc object
         delete rat;
     }
 }
 
-static uint32_t tico_cdreader_first_track_sector(void* track_handle) {
-    TicoRATrack* rat = static_cast<TicoRATrack*>(track_handle);
+static uint32_t GBAStation_cdreader_first_track_sector(void* track_handle) {
+    GBAStationRATrack* rat = static_cast<GBAStationRATrack*>(track_handle);
     return rat ? rat->first_sector : 0;
 }
 
-void TicoCore::RAIdentifyGame(rc_client_t* c, TicoCore* core) {
+void GBAStationCore::RAIdentifyGame(rc_client_t* c, GBAStationCore* core) {
     if (!c || !core || !core->m_gameLoaded) return;
 
     // Arcade hashes by rom name (RC_CONSOLE_ARCADE); Dreamcast hashes the disc.
-    const bool arcade = TicoIsArcadeRom(core->m_gamePath);
+    const bool arcade = GBAStationIsArcadeRom(core->m_gamePath);
     const uint32_t console_id = arcade ? 27u   // RC_CONSOLE_ARCADE
                                        : 40u;  // RC_CONSOLE_DREAMCAST
 
@@ -1791,10 +1848,10 @@ void TicoCore::RAIdentifyGame(rc_client_t* c, TicoCore* core) {
 
         // Set custom CD hooks (disc hashing only)
         rc_hash_callbacks_t callbacks = {};
-        callbacks.cdreader.open_track = tico_cdreader_open_track;
-        callbacks.cdreader.read_sector = tico_cdreader_read_sector;
-        callbacks.cdreader.close_track = tico_cdreader_close_track;
-        callbacks.cdreader.first_track_sector = tico_cdreader_first_track_sector;
+        callbacks.cdreader.open_track = GBAStation_cdreader_open_track;
+        callbacks.cdreader.read_sector = GBAStation_cdreader_read_sector;
+        callbacks.cdreader.close_track = GBAStation_cdreader_close_track;
+        callbacks.cdreader.first_track_sector = GBAStation_cdreader_first_track_sector;
         rc_client_set_hash_callbacks(c, &callbacks);
 
         LOG_CORE("RA: Identifying game for console ID %u...", console_id);
@@ -1804,7 +1861,7 @@ void TicoCore::RAIdentifyGame(rc_client_t* c, TicoCore* core) {
     rc_client_begin_identify_and_load_game(c, console_id, core->m_gamePath.c_str(),
         nullptr, 0,
         [](int res, const char* err, rc_client_t* cc, void* ud) {
-            TicoCore* self = (TicoCore*)ud;
+            GBAStationCore* self = (GBAStationCore*)ud;
             if (res == RC_OK) {
                 const rc_client_game_t* game = rc_client_get_game_info(cc);
                 LOG_CORE("RA: Game identified and loaded successfully: %s", game ? game->title : "Unknown");
@@ -1825,7 +1882,7 @@ void TicoCore::RAIdentifyGame(rc_client_t* c, TicoCore* core) {
     }
 }
 
-void TicoCore::PushRANotification(const std::string& title, const std::string& desc, const std::string& badge) {
+void GBAStationCore::PushRANotification(const std::string& title, const std::string& desc, const std::string& badge) {
     std::lock_guard<std::mutex> lock(m_raCallbackMutex);
     RANotification n;
     n.title = title;
@@ -1845,12 +1902,12 @@ void TicoCore::PushRANotification(const std::string& title, const std::string& d
     }
 }
 
-void TicoCore::PreloadRABadges() {
+void GBAStationCore::PreloadRABadges() {
     if (!m_rcClient) return;
     LOG_CORE("RA: Badge preloading skipped (lazy-load on demand)");
 }
 
-ImTextureID TicoCore::GetRABadgeTexture(const std::string& badge_name) {
+ImTextureID GBAStationCore::GetRABadgeTexture(const std::string& badge_name) {
     // Check in-memory cache first
     auto it = m_raBadgeCache.find(badge_name);
     if (it != m_raBadgeCache.end()) return it->second;
@@ -1858,15 +1915,15 @@ ImTextureID TicoCore::GetRABadgeTexture(const std::string& badge_name) {
     return 0;
 }
 
-void TicoCore::DownloadAndCacheBadge(const std::string& badge_name, bool execute_now) {
+void GBAStationCore::DownloadAndCacheBadge(const std::string& badge_name, bool execute_now) {
 #ifdef __SWITCH__
     std::string badgePath = "sdmc:/GBAStation/DC/assets/ra/" + badge_name + ".png";
     struct stat st = {0};
     if (stat("sdmc:/GBAStation/DC/assets/ra", &st) == -1) mkdir("sdmc:/GBAStation/DC/assets/ra", 0777);
 #else
-    std::string badgePath = "tico/assets/ra/" + badge_name + ".png";
+    std::string badgePath = "GBAStation/assets/ra/" + badge_name + ".png";
     struct stat st = {0};
-    if (stat("tico/assets/ra", &st) == -1) mkdir("tico/assets/ra", 0777);
+    if (stat("GBAStation/assets/ra", &st) == -1) mkdir("GBAStation/assets/ra", 0777);
 #endif
 
     // If file exists locally, load via pending callback directly
@@ -1916,7 +1973,7 @@ void TicoCore::DownloadAndCacheBadge(const std::string& badge_name, bool execute
 #endif
 }
 
-void TicoCore::ProcessPendingBadgeUploads() {
+void GBAStationCore::ProcessPendingBadgeUploads() {
     // Runs on the main thread (RunFrame), the only place the Vulkan overlay
     // texture path is safe to touch. Decode each downloaded badge PNG and
     // upload it as an overlay texture so RA toasts show the achievement art.
@@ -1948,7 +2005,7 @@ void TicoCore::ProcessPendingBadgeUploads() {
 
         ImTextureID tex = 0;
 #ifdef __SWITCH__
-        tex = TicoVulkan::CreateOverlayTextureRGBA(pixels, (uint32_t)w, (uint32_t)h);
+        tex = GBAStationVulkan::CreateOverlayTextureRGBA(pixels, (uint32_t)w, (uint32_t)h);
 #endif
         stbi_image_free(pixels);
 

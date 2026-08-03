@@ -1,10 +1,10 @@
-/// @file TicoOverlay.h
-/// @brief Overlay UI for tico-integrated Flycast
+/// @file GBAStationOverlay.h
+/// @brief Overlay UI for GBAStation-integrated Flycast
 #pragma once
 
 #include "imgui.h"
-#include "TicoMain.h"        // Tico::FrameInput / PadButton
-#include "TicoOverlayHost.h" // IOverlayHost / RANotification / RAAlertPosition
+#include "GBAStationMain.h"        // GBAStation::FrameInput / PadButton
+#include "GBAStationOverlayHost.h" // IOverlayHost / RANotification / RAAlertPosition
 #include <string>
 #include <vector>
 #include <memory>
@@ -43,12 +43,12 @@ enum class FlycastDisplaySize
     Auto = 6
 };
 
-/// @brief Overlay UI for Flycast with tico styling
-class TicoOverlay
+/// @brief Overlay UI for Flycast with GBAStation styling
+class GBAStationOverlay
 {
 public:
-    TicoOverlay();
-    ~TicoOverlay();
+    GBAStationOverlay();
+    ~GBAStationOverlay();
 
     /// @brief Update overlay animation
     void Update(float deltaTime);
@@ -61,13 +61,13 @@ public:
     /// mode/size. Returns the rect (x,y,w,h) in pixels within a screenW×screenH
     /// surface; coreAspect is the core's reported aspect ratio. The libretro
     /// path uses this to letterbox the Vulkan blit, since the game image is
-    /// composited by TicoVulkan rather than drawn through ImGui.
+    /// composited by GBAStationVulkan rather than drawn through ImGui.
     void GetGameViewport(float screenW, float screenH, float coreAspect,
                          float &outX, float &outY, float &outW, float &outH) const;
 
     /// @brief Handle neutralized input
     /// @return true if input was consumed by overlay
-    bool HandleInput(const Tico::FrameInput &input);
+    bool HandleInput(const GBAStation::FrameInput &input);
 
     /// @brief Show/hide overlay
     void Show();

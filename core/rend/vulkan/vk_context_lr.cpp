@@ -26,6 +26,19 @@
 #include "texture.h"
 #include <set>
 
+namespace {
+// libretro_vulkan's retro_vulkan_image only describes an image view.  Its
+// logical video callback dimensions can differ from the backing attachment at
+// higher internal resolutions, so carry the real extent in the private pNext
+// chain consumed by the GBAStation Vulkan frontend.
+constexpr uint32_t kGBAStationImageExtentMagic = 0x47425845; // "GBXE"
+struct GBAStationImageExtent {
+	uint32_t magic = kGBAStationImageExtentMagic;
+	uint32_t width = 0;
+	uint32_t height = 0;
+};
+}
+
 #if VULKAN_HPP_DISPATCH_LOADER_DYNAMIC == 1
 VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #endif
@@ -504,8 +517,14 @@ void VulkanContext::PresentFrame(vk::Image image, vk::ImageView imageView, const
 			true, true);
 	endFrame(image);
 
-	retro_image.image_view = (VkImageView)colorAttachments[GetCurrentImageIndex()]->GetImageView();
-	retro_image.create_info.image = (VkImage)colorAttachments[GetCurrentImageIndex()]->GetImage();
+	auto *colorAttachment = colorAttachments[GetCurrentImageIndex()].get();
+	const vk::Extent2D colorExtent = colorAttachment->getExtent();
+	static GBAStationImageExtent imageExtent;
+	imageExtent.width = colorExtent.width;
+	imageExtent.height = colorExtent.height;
+	retro_image.image_view = (VkImageView)colorAttachment->GetImageView();
+	retro_image.create_info.image = (VkImage)colorAttachment->GetImage();
+	retro_image.create_info.pNext = &imageExtent;
 	retro_render_if->set_image(retro_render_if->handle, &retro_image, 0, nullptr, VK_QUEUE_FAMILY_IGNORED);
 }
 
