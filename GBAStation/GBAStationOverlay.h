@@ -82,8 +82,8 @@ public:
     void SetHost(IOverlayHost *host)
     {
         m_host = host;
-        if (m_host)
-            LoadAccountData();
+        // The 3DS-style overlay has no account/avatar surface.  Avoid account
+        // service and GPU uploads while the Vulkan render context is starting.
     }
 
     /// @brief Font used for RA alert descriptions (description.ttf). When unset,
@@ -107,6 +107,7 @@ private:
     void RenderQuickMenu(ImDrawList *dl, ImVec2 displaySize);
     void RenderSaveStatesMenu(ImDrawList *dl, ImVec2 displaySize);
     void RenderSettingsMenu(ImDrawList *dl, ImVec2 displaySize);
+    void RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize);
     void RenderHelpersBar(ImDrawList *dl, ImVec2 displaySize);
     void RenderStatusBar(ImDrawList *dl, ImVec2 displaySize);
     void RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize);
@@ -195,4 +196,9 @@ private:
     bool LoadAvatarTextureFromMemory(const unsigned char *data, size_t size, const char *tag);
     void ReleaseAvatarTexture();
     void RenderSocialArea(ImDrawList *dl, ImVec2 displaySize);
+    void LoadFocusTexture();
+    void ReleaseFocusTexture();
+    ImTextureID m_focusTexture = 0;
+    int m_focusTextureWidth = 0;
+    int m_focusTextureHeight = 0;
 };

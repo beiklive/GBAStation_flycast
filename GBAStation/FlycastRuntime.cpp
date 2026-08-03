@@ -359,7 +359,11 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
         LOG_WARN("HOME", "SDL_Init(AUDIO|TIMER) failed: %s", SDL_GetError());
 
 #ifdef __SWITCH__
-    nwindowSetDimensions(nwindowGetDefault(), 1920, 1080);
+    // The libretro Vulkan surface and compositor both use the same fixed
+    // handheld/docked output.  Do not briefly configure 1080p here and then
+    // recreate the VI surface at 720p: the stale window dimensions can leave
+    // the first swapchain image scaled from the lower-left quadrant.
+    nwindowSetDimensions(nwindowGetDefault(), 1280, 720);
     UpdateScreenMode();
 #endif
 
@@ -460,8 +464,11 @@ bool FlycastRuntime::InitOverlay(const std::string &romPath)
         return false;
     }
 
+    LOG_INFO("OVERLAY", "creating GBAStation menu model");
     overlay_ = std::make_unique<GBAStationOverlay>();
+    LOG_INFO("OVERLAY", "creating GBAStation menu host");
     overlayHost_ = std::make_unique<FlycastOverlayHost>(core_.get());
+    LOG_INFO("OVERLAY", "binding GBAStation menu host");
     overlay_->SetHost(overlayHost_.get());
     // Prefer the launcher-supplied title; fall back to the rom filename.
     overlay_->SetGameTitle(titleArg_.empty() ? GameTitleFromPath(romPath) : titleArg_);
@@ -629,15 +636,27 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
 void FlycastRuntime::RunFrame()
 {
     UpdateScreenMode();
+    static uint32_t loggedFrames = 0;
+    const bool traceFrame = loggedFrames < 3;
+    if (traceFrame)
+        LOG_INFO("FRAME", "frame %u begin", loggedFrames);
     frameInFlight_ = GBAStationVulkan::BeginFrame();
+    if (traceFrame)
+        LOG_INFO("FRAME", "frame %u acquire=%d", loggedFrames, frameInFlight_ ? 1 : 0);
     if (frameInFlight_ && core_)
     {
+        if (traceFrame)
+            LOG_INFO("FRAME", "frame %u retro_run begin", loggedFrames);
         core_->RunFrame();
+        if (traceFrame)
+            LOG_INFO("FRAME", "frame %u retro_run complete", loggedFrames);
         // The frontend owns pacing through SDL audio.  While fast-forwarding
         // audio is deliberately dropped, so execute one extra core frame.
         if (fastForward_ && !(overlay_ && overlay_->IsVisible()))
             core_->RunFrame();
     }
+    if (traceFrame)
+        ++loggedFrames;
 }
 
 void FlycastRuntime::RenderFrame()
@@ -675,7 +694,15 @@ void FlycastRuntime::RenderFrame()
         GBAStationVulkan::SetGameViewport(0, 0, 0, 0); // full screen
     }
 
+    static uint32_t loggedPresents = 0;
+    if (loggedPresents < 3)
+        LOG_INFO("FRAME", "present %u begin", loggedPresents);
     GBAStationVulkan::EndFrame();
+    if (loggedPresents < 3)
+    {
+        LOG_INFO("FRAME", "present %u complete", loggedPresents);
+        ++loggedPresents;
+    }
     frameInFlight_ = false;
 }
 

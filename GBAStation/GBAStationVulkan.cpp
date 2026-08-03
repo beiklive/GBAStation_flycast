@@ -841,6 +841,11 @@ bool BeginFrame()
     // (fence + acquire semaphore + render semaphore + cmd buffer) AND it's
     // what we return to the libretro core via get_sync_index. The acquired
     // swap image index is independent and tracked in s_currentImage.
+    if (s_frames.empty() || s_currentFrame >= s_frames.size())
+    {
+        VK_LOG_ERROR("BeginFrame has no frame resources");
+        return false;
+    }
     PerFrame& f = s_frames[s_currentFrame];
 
     // Wait for the previous use of this frame slot to complete on the GPU.
@@ -883,6 +888,14 @@ void EndFrame()
     if (!s_frameInFlight)
         return;
 
+    if (s_frames.empty() || s_currentFrame >= s_frames.size() ||
+        s_currentImage >= s_swapImages.size())
+    {
+        VK_LOG_ERROR("EndFrame received invalid frame=%u image=%u resources=%zu swapImages=%zu",
+                     s_currentFrame, s_currentImage, s_frames.size(), s_swapImages.size());
+        s_frameInFlight = false;
+        return;
+    }
     PerFrame& f = s_frames[s_currentFrame];
     vk::Image swapImage = s_swapImages[s_currentImage];
 
