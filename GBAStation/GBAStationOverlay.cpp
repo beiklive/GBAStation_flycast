@@ -852,14 +852,14 @@ void GBAStationOverlay::RenderOverlayBackground(ImDrawList *dl, ImVec2 displaySi
         ImU32 colBase = IM_COL32(0, 0, 0, baseAlpha);
 
         // Top Band
-        dl->AddRectFilledMulGBAStationlor(ImVec2(0, 0), ImVec2(displaySize.x, topH),
+        dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(displaySize.x, topH),
                                     colMax, colMax, colBase, colBase);
 
         // Center Band
         dl->AddRectFilled(ImVec2(0, topH), ImVec2(displaySize.x, topH + centerH), colBase);
 
         // Bottom Band
-        dl->AddRectFilledMulGBAStationlor(ImVec2(0, displaySize.y - botH), ImVec2(displaySize.x, displaySize.y),
+        dl->AddRectFilledMultiColor(ImVec2(0, displaySize.y - botH), ImVec2(displaySize.x, displaySize.y),
                                     colBase, colBase, colMax, colMax);
     }
 }
@@ -2147,7 +2147,7 @@ void GBAStationOverlay::RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize)
         {
             float y1 = clipP0.y;
             float y2 = clipP0.y + shadowH;
-            dl->AddRectFilledMulGBAStationlor(ImVec2(menuPos.x, y1), ImVec2(menuPos.x + menuSize.x, y2),
+            dl->AddRectFilledMultiColor(ImVec2(menuPos.x, y1), ImVec2(menuPos.x + menuSize.x, y2),
                                         shadowStart, shadowStart, shadowEnd, shadowEnd);
         }
 
@@ -2155,7 +2155,7 @@ void GBAStationOverlay::RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize)
         {
             float y1 = clipP1.y - shadowH;
             float y2 = clipP1.y;
-            dl->AddRectFilledMulGBAStationlor(ImVec2(menuPos.x, y1), ImVec2(menuPos.x + menuSize.x, y2),
+            dl->AddRectFilledMultiColor(ImVec2(menuPos.x, y1), ImVec2(menuPos.x + menuSize.x, y2),
                                         shadowEnd, shadowEnd, shadowStart, shadowStart);
         }
     }
@@ -2621,7 +2621,7 @@ void GBAStationOverlay::EnsureRAIconLoaded() {
     nsvgRasterize(rast, image, 0, 0, scale, img, w, h, w * 4);
     ImTextureID tex = m_host->CreateTextureRGBA(img, w, h);
     if (tex != 0) {
-        ra->SeGBAStationnTexture(tex);
+        ra->SetIconTexture(tex);
         m_raIconLoadAttempted = true;
     }
 

@@ -13,6 +13,7 @@
 #include "GBAStationVulkan.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 
 #include <SDL.h>
 #include <SDL_mixer.h>
@@ -34,47 +35,66 @@ namespace GBAStation
 
 namespace {
 
-constexpr ImWchar kGBAStationChineseRanges[] = {
-    0x0020, 0x00FF,
-    0x2000, 0x30FF,
-    0x3400, 0x9FFF,
-    0,
-};
-
 constexpr ImWchar kGBAStationMaterialRanges[] = {
     0xE000, 0xF8FF,
     0,
 };
 
+const ImWchar *GetGBAStationMenuGlyphRanges(ImGuiIO &io) {
+    static ImVector<ImWchar> ranges;
+    if (!ranges.empty()) return ranges.Data;
+
+    ImFontGlyphRangesBuilder builder;
+    builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+    builder.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    builder.AddText(u8"返回游戏 保存状态 读取状态 金手指 画面设置 功能设置 重置游戏 退出游戏 核心设置 按键映射 "
+                    u8"系统 BIOS 视频 渲染 性能 纹理 输入 网络 光枪 VMU 设置 语言 地区 自动 开启 关闭 "
+                    u8"屏幕 过滤 分辨率 跳帧 宽屏 存档 槽位 游戏 模拟器 菜单 暂停 快进 确认 取消");
+    builder.BuildRanges(&ranges);
+    return ranges.Data;
+}
+
 ImFont *AddGBAStationSystemFont(ImGuiIO &io, float size) {
 #ifdef __SWITCH__
-    if (R_FAILED(plInitialize(PlServiceType_User)))
-        return nullptr;
-
-    PlFontData sharedFont{};
-    Result rc = plGetSharedFontByType(&sharedFont, PlSharedFontType_ExtChineseSimplified);
-    if (R_FAILED(rc) || !sharedFont.address || sharedFont.size == 0)
-        rc = plGetSharedFontByType(&sharedFont, PlSharedFontType_ChineseSimplified);
-    if (R_FAILED(rc) || !sharedFont.address || sharedFont.size == 0) {
-        plExit();
+    if (R_FAILED(plInitialize(PlServiceType_User))) {
+        LOG_WARN("OVERLAY", "Switch shared font service is unavailable");
         return nullptr;
     }
 
-    void *fontData = std::malloc(sharedFont.size);
-    if (!fontData) {
-        plExit();
-        return nullptr;
+    // Keep the same source priority as the working GBAStation 3DS menu.
+    // The extended face contains the broader Simplified Chinese repertoire.
+    const PlSharedFontType fontTypes[] = {
+        PlSharedFontType_ExtChineseSimplified,
+        PlSharedFontType_ChineseSimplified,
+        PlSharedFontType_Standard,
+    };
+    ImFont *font = nullptr;
+    int loadedFonts = 0;
+    for (const PlSharedFontType type : fontTypes) {
+        PlFontData sharedFont{};
+        if (R_FAILED(plGetSharedFontByType(&sharedFont, type)) || !sharedFont.address || sharedFont.size == 0)
+            continue;
+
+        void *fontData = std::malloc(sharedFont.size);
+        if (!fontData) continue;
+        std::memcpy(fontData, sharedFont.address, sharedFont.size);
+
+        ImFontConfig config;
+        config.OversampleH = 1;
+        config.OversampleV = 1;
+        config.MergeMode = font != nullptr;
+        ImFont *added = io.Fonts->AddFontFromMemoryTTF(fontData, static_cast<int>(sharedFont.size),
+                                                         size, &config, GetGBAStationMenuGlyphRanges(io));
+        if (!added) {
+            std::free(fontData);
+            continue;
+        }
+        if (!font) font = added;
+        ++loadedFonts;
     }
-    std::memcpy(fontData, sharedFont.address, sharedFont.size);
     plExit();
-
-    ImFontConfig config;
-    config.OversampleH = 1;
-    config.OversampleV = 1;
-    ImFont *font = io.Fonts->AddFontFromMemoryTTF(fontData, static_cast<int>(sharedFont.size),
-                                                    size, &config, kGBAStationChineseRanges);
     if (!font) {
-        std::free(fontData);
+        LOG_ERROR("OVERLAY", "No usable Switch shared font was loaded");
         return nullptr;
     }
     io.FontDefault = font;
@@ -84,6 +104,8 @@ ImFont *AddGBAStationSystemFont(ImGuiIO &io, float size) {
     iconConfig.PixelSnapH = true;
     io.Fonts->AddFontFromFileTTF("romfs:/fonts/MaterialIcons-Regular.ttf", size,
                                  &iconConfig, kGBAStationMaterialRanges);
+    LOG_INFO("OVERLAY", "Switch menu font atlas loaded from %d shared font source(s), Material Icons=%s",
+             loadedFonts, io.Fonts->Fonts.Size > 0 ? "merged" : "unavailable");
     return font;
 #else
     (void)io;
@@ -154,7 +176,7 @@ public:
     std::vector<RANotification> &Notifications() override { return core_->m_raNotifications; }
     RAAlertPosition AlertPosition() const override { return core_->m_raAlertPosition; }
     ImTextureID IconTexture() const override { return core_->m_raIconTexture; }
-    void SeGBAStationnTexture(ImTextureID tex) override { core_->m_raIconTexture = tex; }
+    void SetIconTexture(ImTextureID tex) override { core_->m_raIconTexture = tex; }
     ImTextureID BadgeTexture(const std::string &badge) const override
     {
         auto it = core_->m_raBadgeCache.find(badge);

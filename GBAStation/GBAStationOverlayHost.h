@@ -47,7 +47,7 @@ public:
     virtual std::vector<RANotification> &Notifications() = 0;
     virtual RAAlertPosition AlertPosition() const = 0;
     virtual ImTextureID IconTexture() const = 0;
-    virtual void SeGBAStationnTexture(ImTextureID tex) = 0;
+    virtual void SetIconTexture(ImTextureID tex) = 0;
     virtual ImTextureID BadgeTexture(const std::string &badge) const = 0; // 0 if absent
 };
 
