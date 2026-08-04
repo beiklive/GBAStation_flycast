@@ -82,6 +82,10 @@ struct FrameInput
     int leftStickY = 0;
     int rightStickX = 0;
     int rightStickY = 0;
+    // Raw libnx buttons remain separate from mapped gameplay input so menu
+    // navigation is independent of config.cfg controller remaps.
+    uint64_t rawButtons = 0;
+    uint64_t rawPressed = 0;
 };
 
 /// Implemented by each emulator. Lifecycle mirrors PPSSPP's CoreRuntime.
@@ -123,6 +127,7 @@ private:
     bool exitLocked_ = false;
     bool socketReady_ = false;
     uint64_t prevButtons_[MaxPlayers] = {};
+    uint64_t prevRawButtons_[MaxPlayers] = {};
 };
 
 /// Overlay font/scale factor for the current Switch operation mode (handheld

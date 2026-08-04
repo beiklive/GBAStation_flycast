@@ -368,7 +368,8 @@ FrameInput Main::PollInput()
         padUpdate(&g_pads[player]);
 
         PlayerInput &slot = in.players[player];
-        slot.buttons = MapButtons(padGetButtons(&g_pads[player]));
+        const uint64_t rawButtons = padGetButtons(&g_pads[player]);
+        slot.buttons = MapButtons(rawButtons);
         const HidAnalogStickState left = padGetStickPos(&g_pads[player], 0);
         const HidAnalogStickState right = padGetStickPos(&g_pads[player], 1);
         // libnx reports +Y up; convert to the SDL convention (+Y down) consumers use.
@@ -379,6 +380,12 @@ FrameInput Main::PollInput()
         slot.pressed = slot.buttons & ~prevButtons_[player];
         slot.released = prevButtons_[player] & ~slot.buttons;
         prevButtons_[player] = slot.buttons;
+        if (player == 0)
+        {
+            in.rawButtons = rawButtons;
+            in.rawPressed = rawButtons & ~prevRawButtons_[player];
+        }
+        prevRawButtons_[player] = rawButtons;
     }
 #endif
     in.buttons = in.players[0].buttons;

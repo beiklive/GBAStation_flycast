@@ -831,8 +831,8 @@ void GBAStationOverlay::RenderOverlayBackground(ImDrawList *dl, ImVec2 displaySi
     // Top/Bottom: Fade to Opaque (250)
     // Center: Base Transparency (200)
 
-    float baseAlphaVal = 200.0f;
-    float maxAlphaVal = 250.0f;
+    float baseAlphaVal = 72.0f;
+    float maxAlphaVal = 110.0f;
 
     int baseAlpha = (int)(baseAlphaVal * ease);
     int maxAlpha = (int)(maxAlphaVal * ease);
@@ -962,8 +962,8 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const float sideWidth = std::min(340.0f * scale, width * 0.34f);
     const float headerHeight = 62.0f * scale;
     const float tabHeight = (height - headerHeight - 22.0f * scale) / 8.0f;
-    const ImU32 alphaBg = IM_COL32(9, 13, 23, static_cast<int>(238.0f * ease));
-    const ImU32 panelBg = IM_COL32(19, 25, 40, static_cast<int>(236.0f * ease));
+    const ImU32 alphaBg = IM_COL32(9, 13, 23, static_cast<int>(158.0f * ease));
+    const ImU32 panelBg = IM_COL32(19, 25, 40, static_cast<int>(178.0f * ease));
     const ImU32 line = IM_COL32(105, 126, 165, static_cast<int>(110.0f * ease));
     const ImU32 muted = IM_COL32(178, 190, 213, static_cast<int>(240.0f * ease));
     const ImU32 text = IM_COL32(243, 247, 255, static_cast<int>(255.0f * ease));
@@ -1019,7 +1019,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
 
     const float contentX = min.x + sideWidth + 34.0f * scale;
     const float contentRight = max.x - 34.0f * scale;
-    const float firstRowY = min.y + headerHeight + 32.0f * scale;
+    const float firstRowY = min.y + headerHeight + 140.0f * scale;
     auto drawRow = [&](int row, bool selected, const std::string &label, const std::string &value) {
         const float rowHeight = 58.0f * scale;
         const ImVec2 rowMin(contentX, firstRowY + row * rowHeight);
@@ -1047,10 +1047,12 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     {
         dl->AddText(font, titleSize, ImVec2(contentX, min.y + headerHeight + 8.0f * scale), text,
                     m_isSaveMode ? "保存状态" : "读取状态");
-        for (int i = 0; i < 4; ++i)
+        const int firstSlot = std::clamp(m_saveStateSlot - 5, 0, 4);
+        for (int row = 0; row < 6; ++row)
         {
-            const bool exists = m_host && m_host->IsGameLoaded() && m_host->StateSlotExists(i);
-            drawRow(i, i == m_saveStateSlot, "存档槽 " + std::to_string(i + 1), exists ? "已有存档" : "空");
+            const int slot = firstSlot + row;
+            const bool exists = m_host && m_host->IsGameLoaded() && m_host->StateSlotExists(slot);
+            drawRow(row, slot == m_saveStateSlot, "存档槽 " + std::to_string(slot + 1), exists ? "已有存档" : "空");
         }
     }
     else if (m_currentMenu == OverlayMenu::Settings)
@@ -1082,6 +1084,14 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         dl->AddText(font, titleSize, ImVec2(contentX, min.y + headerHeight + 38.0f * scale), text, tabs[activeTab]);
         dl->AddText(font, labelSize, ImVec2(contentX, min.y + headerHeight + 88.0f * scale), muted, descriptions[activeTab]);
         dl->AddLine(ImVec2(contentX, min.y + headerHeight + 128.0f * scale), ImVec2(contentRight, min.y + headerHeight + 128.0f * scale), line);
+        if (activeTab == 1 || activeTab == 2)
+        {
+            for (int slot = 0; slot < 6; ++slot)
+            {
+                const bool exists = m_host && m_host->IsGameLoaded() && m_host->StateSlotExists(slot);
+                drawRow(slot, false, "存档槽 " + std::to_string(slot + 1), exists ? "已有存档" : "空");
+            }
+        }
         if (activeTab == 5)
         {
             drawRow(0, false, "显示模式", m_displayMode == FlycastDisplayMode::Integer ? "整数缩放" : "比例显示");
@@ -1552,6 +1562,13 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
 
     const uint64_t buttons = input.buttons;
     const uint64_t pressed = input.pressed;
+#ifdef __SWITCH__
+    const uint64_t navButtons = input.rawButtons;
+    const uint64_t navPressed = input.rawPressed;
+#else
+    const uint64_t navButtons = buttons;
+    const uint64_t navPressed = pressed;
+#endif
 
     // Pad_Guide is synthesized by GBAStation::Main from dc.hotkey.menu.pad.  Do not
     // infer it from Start+Select here: those buttons belong to the emulated DC
@@ -1571,10 +1588,10 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     // Directional navigation: merge D-pad + left stick into a held bitmask,
     // then derive edge + hold-repeat without any time API.
     uint64_t dirHeld = 0;
-    if ((buttons & Pad_Up) || input.leftStickY < -16000) dirHeld |= Pad_Up;
-    if ((buttons & Pad_Down) || input.leftStickY > 16000) dirHeld |= Pad_Down;
-    if ((buttons & Pad_Left) || input.leftStickX < -16000) dirHeld |= Pad_Left;
-    if ((buttons & Pad_Right) || input.leftStickX > 16000) dirHeld |= Pad_Right;
+    if ((navButtons & HidNpadButton_Up) || input.leftStickY < -16000) dirHeld |= Pad_Up;
+    if ((navButtons & HidNpadButton_Down) || input.leftStickY > 16000) dirHeld |= Pad_Down;
+    if ((navButtons & HidNpadButton_Left) || input.leftStickX < -16000) dirHeld |= Pad_Left;
+    if ((navButtons & HidNpadButton_Right) || input.leftStickX > 16000) dirHeld |= Pad_Right;
 
     uint64_t dirFire = dirHeld & ~m_navHeldPrev; // new presses fire instantly
     if (dirHeld != 0 && dirHeld == m_navHeldPrev)
@@ -1597,15 +1614,15 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     bool rightPressed = (dirFire & Pad_Right) != 0;
 
     // Confirm = B, Back = A, disc select = Y (edge-triggered).
-    bool confirmPressed = (pressed & Pad_B) != 0;
-    bool backPressed = (pressed & Pad_A) != 0;
-    bool xPressed = (pressed & Pad_Y) != 0;
+    bool confirmPressed = (navPressed & HidNpadButton_A) != 0;
+    bool backPressed = (navPressed & HidNpadButton_B) != 0;
+    bool xPressed = (navPressed & HidNpadButton_X) != 0;
 
     // Minus = reset, but only after the menu's been open a moment (else the
     // Start+Select that opened it would reset immediately).
     constexpr float kResetThreshold = 0.6f;
     if (m_currentMenu == OverlayMenu::QuickMenu &&
-        (pressed & Pad_Select) &&
+        (navPressed & HidNpadButton_Minus) &&
         m_quickMenuOpenTime > kResetThreshold)
     {
         m_shouldReset = true;
@@ -1636,7 +1653,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::SaveStates)
         {
-            m_saveStateSlot = (m_saveStateSlot + 3) % 4;
+            m_saveStateSlot = (m_saveStateSlot + 9) % 10;
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
@@ -1667,7 +1684,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::SaveStates)
         {
-            m_saveStateSlot = (m_saveStateSlot + 1) % 4;
+            m_saveStateSlot = (m_saveStateSlot + 1) % 10;
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
