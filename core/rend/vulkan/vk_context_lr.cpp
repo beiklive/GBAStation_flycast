@@ -554,8 +554,12 @@ void VulkanContext::beginFrame(vk::Extent2D extent, vk::Image barrierImage)
 	if (colorAttachments[currentImage] == nullptr)
 	{
 		colorAttachments[currentImage] = std::make_unique<FramebufferAttachment>(physicalDevice, device);
+		// The libretro frontend composites this off-screen attachment into its
+		// swapchain with vkCmdBlitImage.  It must therefore be created as a
+		// transfer source as well as a render target/sampleable image.
 		colorAttachments[currentImage]->Init(extent.width, extent.height, vk::Format::eR8G8B8A8Unorm,
-				vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+				vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
+				vk::ImageUsageFlagBits::eTransferSrc,
 				"COLOR ATTACHMENT " + std::to_string(currentImage));
 		vk::ImageView imageView = colorAttachments[currentImage]->GetImageView();
 		vk::FramebufferCreateInfo createInfo(vk::FramebufferCreateFlags(), *renderPass,

@@ -1759,11 +1759,11 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             switch (m_settingsSelection)
             {
             case 0: CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, direction); break;
-            case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2", "3"}, direction); break;
-            case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"0", "2", "4", "8", "16"}, direction); break;
+            case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2"}, direction); break;
+            case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"off", "2", "4", "8", "16"}, direction); break;
             case 3: CycleFlycastOption(m_host, "reicast_mipmapping", {"disabled", "enabled"}, direction); break;
-            case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "enabled"}, direction); break;
-            case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3"}, direction); break;
+            case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, direction); break;
+            case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, direction); break;
             case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, direction); break;
             case 7: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, direction); break;
             }
@@ -1877,11 +1877,11 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 switch (m_settingsSelection)
                 {
                 case 0: CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, 1); break;
-                case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2", "3"}, 1); break;
-                case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"0", "2", "4", "8", "16"}, 1); break;
+                case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2"}, 1); break;
+                case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"off", "2", "4", "8", "16"}, 1); break;
                 case 3: CycleFlycastOption(m_host, "reicast_mipmapping", {"disabled", "enabled"}, 1); break;
-                case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "enabled"}, 1); break;
-                case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3"}, 1); break;
+                case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, 1); break;
+                case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, 1); break;
                 case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, 1); break;
                 case 7: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, 1); break;
                 }

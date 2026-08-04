@@ -500,6 +500,15 @@ void FlycastRuntime::RenderOverlayFrame(float deltaTime)
     if (!overlayReady_ || !overlay_)
         return;
 
+    // Flycast owns the core command buffers for the game frame.  Do not run
+    // ImGui's Vulkan backend while the menu is closed: aside from doing
+    // needless work this mixes a second render pass into the first boot frame.
+    if (!overlay_->IsVisible())
+    {
+        GBAStationVulkan::SetOverlayDrawData(nullptr);
+        return;
+    }
+
     uint32_t width = 0, height = 0;
     GBAStationVulkan::GetSwapExtent(width, height);
 
@@ -678,7 +687,13 @@ void FlycastRuntime::RenderFrame()
     if (deltaTime <= 0.0f || deltaTime > 0.25f)
         deltaTime = 1.0f / 60.0f;
 
+    static uint32_t loggedRenderFrames = 0;
+    const bool traceRender = loggedRenderFrames < 3;
+    if (traceRender)
+        LOG_INFO("FRAME", "render %u overlay begin", loggedRenderFrames);
     RenderOverlayFrame(deltaTime);
+    if (traceRender)
+        LOG_INFO("FRAME", "render %u overlay complete", loggedRenderFrames);
 
     // Apply the overlay's screen-size / display-mode selection to the game blit.
     // The game image is composited by GBAStationVulkan (not ImGui), so the destination
@@ -702,14 +717,15 @@ void FlycastRuntime::RenderFrame()
         GBAStationVulkan::SetGameViewport(0, 0, 0, 0); // full screen
     }
 
-    static uint32_t loggedPresents = 0;
-    if (loggedPresents < 3)
-        LOG_INFO("FRAME", "present %u begin", loggedPresents);
+    if (traceRender)
+        LOG_INFO("FRAME", "render %u viewport complete", loggedRenderFrames);
+    if (traceRender)
+        LOG_INFO("FRAME", "render %u present begin", loggedRenderFrames);
     GBAStationVulkan::EndFrame();
-    if (loggedPresents < 3)
+    if (traceRender)
     {
-        LOG_INFO("FRAME", "present %u complete", loggedPresents);
-        ++loggedPresents;
+        LOG_INFO("FRAME", "render %u present complete", loggedRenderFrames);
+        ++loggedRenderFrames;
     }
     frameInFlight_ = false;
 }
