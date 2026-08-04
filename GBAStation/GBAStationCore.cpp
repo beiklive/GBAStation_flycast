@@ -1515,6 +1515,19 @@ std::string GBAStationCore::GetConfigValue(const std::string &key, const std::st
     return defaultVal;
 }
 
+bool GBAStationCore::ApplyPendingOptions()
+{
+    if (!m_gameLoaded || !m_variablesUpdated)
+        return false;
+
+    const bool wasPaused = m_paused;
+    m_paused = false;
+    ClearInputs();
+    RunFrame();
+    m_paused = wasPaused;
+    return true;
+}
+
 std::string GBAStationCore::GetCoreOption(const std::string &key, const std::string &fallback) const
 {
     const auto it = m_configOptions.find(key);

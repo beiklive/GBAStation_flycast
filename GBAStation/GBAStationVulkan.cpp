@@ -1080,7 +1080,10 @@ void EndFrame()
         submitCmds.push_back(cb);
     submitCmds.push_back(f.cmd);
 
-    vk::PipelineStageFlags waitStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    // The acquired image is first transitioned, cleared, and blitted by transfer
+    // commands.  Waiting at color-attachment output lets those commands race the
+    // presentation engine on the first frame.
+    vk::PipelineStageFlags waitStage = vk::PipelineStageFlagBits::eTransfer;
 
     std::vector<vk::Semaphore> signalSems = {f.renderSemaphore};
     if (f.signalSemaphore != VK_NULL_HANDLE)

@@ -47,6 +47,9 @@ public:
     /// @brief Run a single frame
     void RunFrame();
 
+    // Let libretro consume changed core options while the overlay has paused play.
+    bool ApplyPendingOptions();
+
     /// @brief Reset the game
     void Reset();
 

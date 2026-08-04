@@ -30,7 +30,7 @@ int main(int argc, char *argv[])
     Logger::Instance().EnableCategory("AUDIO", true);
     Logger::Instance().EnableCategory("LOADER", true);
     Logger::Instance().EnableCategory("OVERLAY", true);
-    LOG_INFO("HOME", "flycast entry argc=%d build=20260802-switchvk-drmtrace-v8", argc);
+    LOG_INFO("HOME", "flycast entry argc=%d build=20260804-switchvk-presentfix-v10", argc);
 
     // Route the agnostic layer's log lines through the project macro logger.
     GBAStation::LogCallback log = [](const std::string &line) {

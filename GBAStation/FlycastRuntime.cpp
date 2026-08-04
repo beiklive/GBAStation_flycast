@@ -664,7 +664,10 @@ void FlycastRuntime::RunFrame()
     {
         if (traceFrame)
             LOG_INFO("FRAME", "frame %u retro_run begin", loggedFrames);
-        core_->RunFrame();
+        if (overlay_ && overlay_->IsVisible())
+            core_->ApplyPendingOptions();
+        else
+            core_->RunFrame();
         if (traceFrame)
             LOG_INFO("FRAME", "frame %u retro_run complete", loggedFrames);
         // The frontend owns pacing through SDL audio.  While fast-forwarding
