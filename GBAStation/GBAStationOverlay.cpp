@@ -92,6 +92,30 @@ static std::string ReadGBAStationConfigValue(const char *key)
     return {};
 }
 
+static void CycleFlycastOption(IOverlayHost *host, const char *key,
+                               std::initializer_list<const char *> values, int direction)
+{
+    if (!host || values.size() == 0)
+        return;
+    const std::string current = host->GetCoreOption(key, *values.begin());
+    int index = 0;
+    int candidate = 0;
+    for (const char *value : values)
+    {
+        if (current == value)
+        {
+            index = candidate;
+            break;
+        }
+        ++candidate;
+    }
+    const int count = static_cast<int>(values.size());
+    index = (index + direction + count) % count;
+    auto value = values.begin();
+    std::advance(value, index);
+    host->SetCoreOption(key, *value);
+}
+
 #ifdef __SWITCH__
 #include <switch.h>
 #endif
@@ -474,10 +498,9 @@ void GBAStationOverlay::LoadAccountData()
 
 void GBAStationOverlay::Update(float deltaTime)
 {
-    // Upload the focus texture after the runtime has entered its frame loop.
-    // InitOverlay runs during the core's Vulkan context reset and is not a safe
-    // point for synchronous texture upload on switchVK.
-    LoadFocusTexture();
+    // switchVK's first frame runs immediately after Flycast's Vulkan context
+    // reset.  Texture uploads from here re-enter the renderer before its first
+    // present and crash on hardware.  The menu has a vector focus fallback.
     // Pre-load RA icon texture BEFORE rendering (GL-safe: outside ImGui frame)
     EnsureRAIconLoaded();
 
@@ -1066,11 +1089,23 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         else if (m_displaySize == FlycastDisplaySize::Stretch) size = "拉伸";
         else if (m_displaySize == FlycastDisplaySize::_4_3) size = "4:3";
         else if (m_displaySize == FlycastDisplaySize::_16_9) size = "16:9";
-        drawRow(0, m_settingsSelection == 0, "显示模式", mode);
-        drawRow(1, m_settingsSelection == 1, "画面比例", size);
         if (activeTab == 5)
-            dl->AddText(font, labelSize, ImVec2(contentX, firstRowY + 3 * 58.0f * scale), muted,
-                        "完整核心选项可在 GBAStation 设置页分类编辑。");
+        {
+            const char *labels[] = {"渲染分辨率", "纹理过滤", "各向异性过滤", "Mip 贴图", "自动跳帧", "帧跳过", "宽屏修正", "多线程渲染"};
+            const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "reicast_threaded_rendering"};
+            const int first = std::clamp(m_settingsSelection - 3, 0, 2);
+            for (int row = 0; row < 6; ++row)
+            {
+                const int option = first + row;
+                const std::string value = m_host ? m_host->GetCoreOption(keys[option], "自动") : "自动";
+                drawRow(row, option == m_settingsSelection, labels[option], value);
+            }
+        }
+        else
+        {
+            drawRow(0, m_settingsSelection == 0, "显示模式", mode);
+            drawRow(1, m_settingsSelection == 1, "画面比例", size);
+        }
     }
     else if (m_currentMenu == OverlayMenu::DiscSelect)
     {
@@ -1656,9 +1691,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             m_saveStateSlot = (m_saveStateSlot + 9) % 10;
         }
         else if (m_currentMenu == OverlayMenu::Settings)
-        {
-            m_settingsSelection = (m_settingsSelection + 1) % 2;
-        }
+            m_settingsSelection = (m_settingsSelection + (m_quickMenuSelection == 5 ? 7 : 1)) % (m_quickMenuSelection == 5 ? 8 : 2);
         else if (m_currentMenu == OverlayMenu::DiscSelect && !m_discs.empty())
         {
             m_discSelection--;
@@ -1687,9 +1720,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             m_saveStateSlot = (m_saveStateSlot + 1) % 10;
         }
         else if (m_currentMenu == OverlayMenu::Settings)
-        {
-            m_settingsSelection = (m_settingsSelection + 1) % 2;
-        }
+            m_settingsSelection = (m_settingsSelection + 1) % (m_quickMenuSelection == 5 ? 8 : 2);
         else if (m_currentMenu == OverlayMenu::DiscSelect && !m_discs.empty())
         {
             m_discSelection++;
@@ -1723,7 +1754,21 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
 
     if (directionChanged && m_currentMenu == OverlayMenu::Settings)
     {
-        if (m_settingsSelection == 0)
+        if (m_quickMenuSelection == 5)
+        {
+            switch (m_settingsSelection)
+            {
+            case 0: CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, direction); break;
+            case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2", "3"}, direction); break;
+            case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"0", "2", "4", "8", "16"}, direction); break;
+            case 3: CycleFlycastOption(m_host, "reicast_mipmapping", {"disabled", "enabled"}, direction); break;
+            case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "enabled"}, direction); break;
+            case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3"}, direction); break;
+            case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, direction); break;
+            case 7: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, direction); break;
+            }
+        }
+        else if (m_settingsSelection == 0)
         {
             // Display Mode: toggle Integer ↔ Display
             if (m_displayMode == FlycastDisplayMode::Display)
@@ -1827,8 +1872,22 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            // Confirm acts like Right
-            if (m_settingsSelection == 0)
+            if (m_quickMenuSelection == 5)
+            {
+                switch (m_settingsSelection)
+                {
+                case 0: CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, 1); break;
+                case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2", "3"}, 1); break;
+                case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"0", "2", "4", "8", "16"}, 1); break;
+                case 3: CycleFlycastOption(m_host, "reicast_mipmapping", {"disabled", "enabled"}, 1); break;
+                case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "enabled"}, 1); break;
+                case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3"}, 1); break;
+                case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, 1); break;
+                case 7: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, 1); break;
+                }
+            }
+            // Confirm acts like Right.
+            else if (m_settingsSelection == 0)
             {
                 if (m_displayMode == FlycastDisplayMode::Display)
                     m_displayMode = FlycastDisplayMode::Integer;

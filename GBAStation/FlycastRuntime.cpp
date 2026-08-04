@@ -158,6 +158,14 @@ public:
     {
         if (core_) core_->SwapDiskByPath(path);
     }
+    std::string GetCoreOption(const std::string &key, const std::string &fallback = "") override
+    {
+        return core_ ? core_->GetCoreOption(key, fallback) : fallback;
+    }
+    void SetCoreOption(const std::string &key, const std::string &value) override
+    {
+        if (core_) core_->SetCoreOption(key, value);
+    }
 
     ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) override
     {

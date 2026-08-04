@@ -74,6 +74,10 @@ public:
     /// @brief Get current game path
     std::string GetGamePath() const { return m_gamePath; }
 
+    // Runtime core options are supplied to libretro again on the next frame.
+    std::string GetCoreOption(const std::string &key, const std::string &fallback = "") const;
+    void SetCoreOption(const std::string &key, const std::string &value);
+
     /// @brief Disk control
     bool HasDiskControl() const { return m_hasDiskControl; }
     unsigned GetDiskCount() const;
@@ -181,6 +185,7 @@ private:
     // Configuration
     std::string GetConfigValue(const std::string &key, const std::string &defaultVal = "");
     void LoadConfig();
+    void SaveConfigOption(const std::string &key, const std::string &value);
     std::map<std::string, std::string> m_configOptions;
     bool m_configLoaded = false;
 

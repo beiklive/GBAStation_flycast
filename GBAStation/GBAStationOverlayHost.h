@@ -66,6 +66,11 @@ public:
     virtual void LoadStateSlot(int slot) = 0;
     virtual void SwapDisc(const std::string &path) = 0;
 
+    // Live libretro options. Implementations that do not expose options retain
+    // the fallback values and leave the menu rows read-only.
+    virtual std::string GetCoreOption(const std::string &, const std::string &fallback = "") { return fallback; }
+    virtual void SetCoreOption(const std::string &, const std::string &) {}
+
     // GPU textures (RGBA8). Backend-specific implementation lives in the host.
     virtual ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) = 0;
     virtual void DestroyTexture(ImTextureID tex) = 0;

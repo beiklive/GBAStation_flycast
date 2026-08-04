@@ -1515,6 +1515,43 @@ std::string GBAStationCore::GetConfigValue(const std::string &key, const std::st
     return defaultVal;
 }
 
+std::string GBAStationCore::GetCoreOption(const std::string &key, const std::string &fallback) const
+{
+    const auto it = m_configOptions.find(key);
+    return it == m_configOptions.end() ? fallback : it->second;
+}
+
+void GBAStationCore::SetCoreOption(const std::string &key, const std::string &value)
+{
+    if (m_configOptions[key] == value)
+        return;
+    m_configOptions[key] = value;
+    m_variablesUpdated = true;
+    SaveConfigOption(key, value);
+    LOG_CORE("Runtime option %s=%s", key.c_str(), value.c_str());
+}
+
+void GBAStationCore::SaveConfigOption(const std::string &key, const std::string &value)
+{
+#ifdef __SWITCH__
+    const char *configPath = "sdmc:/GBAStation/config/cores/flycast.jsonc";
+#else
+    const char *configPath = "GBAStation/config/cores/flycast.jsonc";
+#endif
+    nlohmann::json config = nlohmann::json::object();
+    std::ifstream in(configPath);
+    if (in.good())
+    {
+        const nlohmann::json parsed = nlohmann::json::parse(in, nullptr, false, true);
+        if (!parsed.is_discarded() && parsed.is_object())
+            config = parsed;
+    }
+    config[key] = value;
+    std::ofstream out(configPath);
+    if (out.good())
+        out << config.dump(4);
+}
+
 //==============================================================================
 // Disk Control
 //==============================================================================
