@@ -528,6 +528,7 @@ void GBAStationOverlay::Show()
         m_animTimer = 0.0f;
         m_quickMenuOpenTime = 0.0f;
         m_quickMenuSelection = 0;
+        m_sidebarFocused = true;
         LoadConfig();        // Reload config on open
         LoadGeneralConfig(); // Reload hour format on open
         ScanForDiscs();      // Scan for multi-disc
@@ -537,6 +538,38 @@ void GBAStationOverlay::Show()
 void GBAStationOverlay::Hide()
 {
     m_currentMenu = OverlayMenu::None;
+    // HandleInput() returns immediately while hidden, so any navigation key
+    // released after save/load would otherwise remain latched forever.
+    m_navHeldPrev = 0;
+    m_navRepeatFrames = 0;
+}
+
+void GBAStationOverlay::ActivateTab(int tab)
+{
+    m_quickMenuSelection = std::clamp(tab, 0, 7);
+    m_settingsSelection = 0;
+    m_sidebarFocused = true;
+
+    switch (m_quickMenuSelection)
+    {
+    case 1:
+        m_isSaveMode = true;
+        m_currentMenu = OverlayMenu::SaveStates;
+        break;
+    case 2:
+        m_isSaveMode = false;
+        m_currentMenu = OverlayMenu::SaveStates;
+        break;
+    case 3:
+    case 4:
+    case 5:
+        m_currentMenu = OverlayMenu::Settings;
+        break;
+    default:
+        m_currentMenu = OverlayMenu::QuickMenu;
+        break;
+    }
+    m_animTimer = 0.4f;
 }
 
 //==============================================================================
@@ -979,7 +1012,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const float t = std::min(m_animTimer / 0.4f, 1.0f);
     const float ease = 1.0f - std::pow(1.0f - t, 3.0f);
     const float width = std::min(displaySize.x - 72.0f * scale, 1192.0f * scale);
-    const float height = std::min(displaySize.y - 104.0f * scale, 590.0f * scale);
+    const float height = displaySize.y - 56.0f * scale;
     const ImVec2 min((displaySize.x - width) * 0.5f, (displaySize.y - height) * 0.5f);
     const ImVec2 max(min.x + width, min.y + height);
     const float sideWidth = std::min(340.0f * scale, width * 0.34f);
@@ -991,17 +1024,12 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const ImU32 muted = IM_COL32(178, 190, 213, static_cast<int>(240.0f * ease));
     const ImU32 text = IM_COL32(243, 247, 255, static_cast<int>(255.0f * ease));
     const char *tabs[] = {"返回游戏", "保存状态", "读取状态", "金手指", "画面设置", "功能设置", "重置游戏", "退出游戏"};
+    const char *icons[] = {u8"\ue5c4", u8"\ue161", u8"\ue042", u8"\ue87d", u8"\ue3b6", u8"\ue8b8", u8"\ue5d5", u8"\ue8ac"};
     const char *descriptions[] = {
         "继续当前游戏。", "创建当前游戏的即时存档。", "从即时存档恢复游戏。", "管理当前游戏的金手指。",
         "调整画面比例和缩放方式。", "调整可即时生效的核心选项。", "重新启动当前游戏。", "返回 GBAStation。"};
 
-    int activeTab = m_quickMenuSelection;
-    if (m_currentMenu == OverlayMenu::SaveStates)
-        activeTab = m_isSaveMode ? 1 : 2;
-    else if (m_currentMenu == OverlayMenu::Settings)
-        activeTab = m_quickMenuSelection == 5 ? 5 : 4;
-    else if (m_currentMenu == OverlayMenu::DiscSelect)
-        activeTab = 5;
+    const int activeTab = m_quickMenuSelection;
 
     dl->AddRectFilled(min, max, alphaBg);
     dl->AddRectFilled(ImVec2(min.x, min.y + headerHeight), ImVec2(min.x + sideWidth, max.y), panelBg);
@@ -1036,15 +1064,16 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 dl->AddRect(rowMin, rowMax, IM_COL32(126, 175, 255, static_cast<int>(255.0f * ease)), 0.0f, 0, 2.0f * scale);
         }
         const ImVec2 label = font->CalcTextSizeA(labelSize, FLT_MAX, 0.0f, tabs[i]);
-        dl->AddText(font, labelSize, ImVec2(rowMin.x + 22.0f * scale, rowMin.y + (rowMax.y - rowMin.y - label.y) * 0.5f),
-                    selected ? text : muted, tabs[i]);
+        const float textY = rowMin.y + (rowMax.y - rowMin.y - label.y) * 0.5f;
+        dl->AddText(font, labelSize * 1.08f, ImVec2(rowMin.x + 18.0f * scale, textY), selected ? text : muted, icons[i]);
+        dl->AddText(font, labelSize, ImVec2(rowMin.x + 52.0f * scale, textY), selected ? text : muted, tabs[i]);
     }
 
     const float contentX = min.x + sideWidth + 34.0f * scale;
     const float contentRight = max.x - 34.0f * scale;
-    const float firstRowY = min.y + headerHeight + 140.0f * scale;
+    const float firstRowY = min.y + headerHeight + 72.0f * scale;
     auto drawRow = [&](int row, bool selected, const std::string &label, const std::string &value) {
-        const float rowHeight = 58.0f * scale;
+        const float rowHeight = 52.0f * scale;
         const ImVec2 rowMin(contentX, firstRowY + row * rowHeight);
         const ImVec2 rowMax(contentRight, rowMin.y + rowHeight - 5.0f * scale);
         if (selected)
@@ -1080,8 +1109,8 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     }
     else if (m_currentMenu == OverlayMenu::Settings)
     {
-        dl->AddText(font, titleSize, ImVec2(contentX, min.y + headerHeight + 8.0f * scale), text,
-                    activeTab == 5 ? "功能设置" : "画面设置");
+        const char *pageTitle = activeTab == 3 ? "金手指" : (activeTab == 5 ? "功能设置" : "画面设置");
+        dl->AddText(font, titleSize, ImVec2(contentX, min.y + headerHeight + 8.0f * scale), text, pageTitle);
         const std::string mode = m_displayMode == FlycastDisplayMode::Integer ? "整数缩放" : "比例显示";
         std::string size = "原始比例";
         if (m_displayMode == FlycastDisplayMode::Integer)
@@ -1089,7 +1118,13 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         else if (m_displaySize == FlycastDisplaySize::Stretch) size = "拉伸";
         else if (m_displaySize == FlycastDisplaySize::_4_3) size = "4:3";
         else if (m_displaySize == FlycastDisplaySize::_16_9) size = "16:9";
-        if (activeTab == 5)
+        if (activeTab == 3)
+        {
+            const std::string enabled = m_host && m_host->GetCoreOption("reicast_widescreen_cheats", "disabled") == "enabled"
+                                            ? "开启" : "关闭";
+            drawRow(0, m_settingsSelection == 0, "宽屏金手指", enabled);
+        }
+        else if (activeTab == 5)
         {
             const char *labels[] = {"渲染分辨率", "纹理过滤", "各向异性过滤", "Mip 贴图", "自动跳帧", "帧跳过", "宽屏修正", "多线程渲染"};
             const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "reicast_threaded_rendering"};
@@ -1127,7 +1162,9 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 drawRow(slot, false, "存档槽 " + std::to_string(slot + 1), exists ? "已有存档" : "空");
             }
         }
-        if (activeTab == 5)
+        if (activeTab == 3)
+            drawRow(0, false, "宽屏金手指", "进入后调整");
+        else if (activeTab == 5)
         {
             drawRow(0, false, "显示模式", m_displayMode == FlycastDisplayMode::Integer ? "整数缩放" : "比例显示");
             drawRow(1, false, "画面比例", "进入后调整");
@@ -1653,6 +1690,42 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     bool backPressed = (navPressed & HidNpadButton_B) != 0;
     bool xPressed = (navPressed & HidNpadButton_X) != 0;
 
+    // The sidebar owns navigation until Right explicitly enters the active
+    // page. Switching a tab is immediate: the right panel changes before any
+    // confirmation is required.
+    if (m_sidebarFocused)
+    {
+        if (upPressed)
+            ActivateTab((m_quickMenuSelection + 7) % 8);
+        if (downPressed)
+            ActivateTab((m_quickMenuSelection + 1) % 8);
+        if (rightPressed && (m_currentMenu == OverlayMenu::SaveStates || m_currentMenu == OverlayMenu::Settings))
+            m_sidebarFocused = false;
+        if (confirmPressed)
+        {
+            if (m_quickMenuSelection == 0)
+                Hide();
+            else if (m_quickMenuSelection == 6)
+            {
+                m_shouldReset = true;
+                Hide();
+            }
+            else if (m_quickMenuSelection == 7)
+                m_shouldExit = true;
+            else if (m_currentMenu == OverlayMenu::SaveStates || m_currentMenu == OverlayMenu::Settings)
+                m_sidebarFocused = false;
+        }
+        if (backPressed)
+            Hide();
+        return true;
+    }
+
+    if (leftPressed)
+    {
+        m_sidebarFocused = true;
+        return true;
+    }
+
     // Minus = reset, but only after the menu's been open a moment (else the
     // Start+Select that opened it would reset immediately).
     constexpr float kResetThreshold = 0.6f;
@@ -1691,7 +1764,10 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             m_saveStateSlot = (m_saveStateSlot + 9) % 10;
         }
         else if (m_currentMenu == OverlayMenu::Settings)
-            m_settingsSelection = (m_settingsSelection + (m_quickMenuSelection == 5 ? 7 : 1)) % (m_quickMenuSelection == 5 ? 8 : 2);
+        {
+            const int settingCount = m_quickMenuSelection == 5 ? 8 : (m_quickMenuSelection == 3 ? 1 : 2);
+            m_settingsSelection = (m_settingsSelection + settingCount - 1) % settingCount;
+        }
         else if (m_currentMenu == OverlayMenu::DiscSelect && !m_discs.empty())
         {
             m_discSelection--;
@@ -1720,7 +1796,10 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             m_saveStateSlot = (m_saveStateSlot + 1) % 10;
         }
         else if (m_currentMenu == OverlayMenu::Settings)
-            m_settingsSelection = (m_settingsSelection + 1) % (m_quickMenuSelection == 5 ? 8 : 2);
+        {
+            const int settingCount = m_quickMenuSelection == 5 ? 8 : (m_quickMenuSelection == 3 ? 1 : 2);
+            m_settingsSelection = (m_settingsSelection + 1) % settingCount;
+        }
         else if (m_currentMenu == OverlayMenu::DiscSelect && !m_discs.empty())
         {
             m_discSelection++;
@@ -1754,7 +1833,11 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
 
     if (directionChanged && m_currentMenu == OverlayMenu::Settings)
     {
-        if (m_quickMenuSelection == 5)
+        if (m_quickMenuSelection == 3)
+        {
+            CycleFlycastOption(m_host, "reicast_widescreen_cheats", {"disabled", "enabled"}, direction);
+        }
+        else if (m_quickMenuSelection == 5)
         {
             switch (m_settingsSelection)
             {
@@ -1831,7 +1914,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 m_currentMenu = OverlayMenu::SaveStates;
                 m_animTimer = 0.4f;
                 break;
-            case 3: // Cheat settings (Flycast uses the shared core options page)
+            case 3: // Runtime widescreen cheat option.
             case 4: // Video settings
             case 5: // Core settings
                 m_currentMenu = OverlayMenu::Settings;
@@ -1855,6 +1938,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 {
                     m_host->SaveStateSlot(m_saveStateSlot);
                     m_currentMenu = OverlayMenu::QuickMenu;
+                    m_sidebarFocused = true;
                 }
                 else
                 {
@@ -1872,7 +1956,11 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            if (m_quickMenuSelection == 5)
+            if (m_quickMenuSelection == 3)
+            {
+                CycleFlycastOption(m_host, "reicast_widescreen_cheats", {"disabled", "enabled"}, 1);
+            }
+            else if (m_quickMenuSelection == 5)
             {
                 switch (m_settingsSelection)
                 {
@@ -1931,25 +2019,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     // Back
     if (backPressed)
     {
-        if (m_currentMenu == OverlayMenu::QuickMenu)
-        {
-            Hide();
-        }
-        else if (m_currentMenu == OverlayMenu::SaveStates)
-        {
-            m_currentMenu = OverlayMenu::QuickMenu;
-            m_animTimer = 0.4f;
-        }
-        else if (m_currentMenu == OverlayMenu::Settings)
-        {
-            m_currentMenu = OverlayMenu::QuickMenu;
-            m_animTimer = 0.4f;
-        }
-        else if (m_currentMenu == OverlayMenu::DiscSelect)
-        {
-            m_currentMenu = OverlayMenu::QuickMenu;
-            m_animTimer = 0.4f;
-        }
+        m_sidebarFocused = true;
     }
 
     return true;

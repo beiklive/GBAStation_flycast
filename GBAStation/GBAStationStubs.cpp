@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -46,6 +47,12 @@ void sdl_stopHaptic(int port) {
 }
 
 extern "C" {
+
+// Mesa's Switch static build uses the glibc helper. Horizon has no setuid
+// process model, so the normal environment lookup is the safe equivalent.
+char *secure_getenv(const char *name) {
+    return std::getenv(name);
+}
 
 using EGLBoolean = unsigned int;
 using EGLenum = unsigned int;

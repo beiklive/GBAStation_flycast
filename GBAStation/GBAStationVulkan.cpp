@@ -143,6 +143,7 @@ vk::Instance        s_instance;
 vk::PhysicalDevice  s_gpu;
 vk::Device          s_device;
 vk::Queue           s_queue;
+vk::Queue           s_presentQueue;
 uint32_t            s_queueFamilyIndex = 0;
 
 vk::SurfaceKHR      s_surface;
@@ -529,6 +530,10 @@ bool CreateDeviceInternal()
         s_gpu = vk::PhysicalDevice(ctx.gpu);
         s_device = vk::Device(ctx.device);
         s_queue = vk::Queue(ctx.queue);
+        // The negotiation contract permits a separate presentation queue.
+        // Keep it distinct from the graphics queue rather than assuming the
+        // Switch implementation always exposes a combined family.
+        s_presentQueue = vk::Queue(ctx.presentation_queue ? ctx.presentation_queue : ctx.queue);
         s_queueFamilyIndex = ctx.queue_family_index;
 
 #if VULKAN_HPP_DISPATCH_LOADER_DYNAMIC == 1
@@ -536,7 +541,9 @@ bool CreateDeviceInternal()
         VULKAN_HPP_DEFAULT_DISPATCHER.init(s_device);
         VK_LOG_INFO("dispatcher init device ok");
 #endif
-        VK_LOG_INFO("Device created via core negotiation (qfi=%u)", s_queueFamilyIndex);
+        VK_LOG_INFO("Device created via core negotiation (qfi=%u gfx=%p present=%p)",
+                    s_queueFamilyIndex, static_cast<VkQueue>(s_queue),
+                    static_cast<VkQueue>(s_presentQueue));
         return true;
     }
 
@@ -599,6 +606,7 @@ bool CreateDeviceInternal()
     VULKAN_HPP_DEFAULT_DISPATCHER.init(s_device);
 #endif
     s_queue = s_device.getQueue(s_queueFamilyIndex, 0);
+    s_presentQueue = s_queue;
     VK_LOG_INFO("Device created via fallback path (qfi=%u)", s_queueFamilyIndex);
     return true;
 }
@@ -850,7 +858,6 @@ bool BeginFrame()
 
     // Wait for the previous use of this frame slot to complete on the GPU.
     (void)s_device.waitForFences(f.inflightFence, VK_TRUE, UINT64_MAX);
-    s_device.resetFences(f.inflightFence);
 
     try
     {
@@ -898,15 +905,12 @@ void EndFrame()
     }
     PerFrame& f = s_frames[s_currentFrame];
     vk::Image swapImage = s_swapImages[s_currentImage];
-
-    // Transition swap image to TRANSFER_DST regardless — even if the core
-    // didn't produce an image, we still clear-and-present so the screen
-    // doesn't deadlock waiting on us.
-    TransitionLayout(f.cmd, swapImage,
-                     vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
-                     {}, vk::AccessFlagBits::eTransferWrite,
-                     vk::PipelineStageFlagBits::eTopOfPipe,
-                     vk::PipelineStageFlagBits::eTransfer);
+    static uint32_t tracedFrames = 0;
+    const bool trace = tracedFrames < 3;
+    if (trace)
+        VK_LOG_INFO("EndFrame[%u] begin slot=%u image=%u coreCmd=%zu imageValid=%d overlay=%d",
+                    tracedFrames, s_currentFrame, s_currentImage, f.coreCommandBuffers.size(),
+                    f.imageValid ? 1 : 0, s_overlayReady ? 1 : 0);
 
     const retro_vulkan_image* sourceImage = nullptr;
     bool reusingLastImage = false;
@@ -920,8 +924,61 @@ void EndFrame()
         reusingLastImage = true;
     }
 
+    const bool hasOverlayDraw = s_overlayReady && s_overlayDrawData &&
+        s_overlayDrawData->TotalVtxCount > 0 && s_currentImage < s_overlayFramebuffers.size();
+
+    // Flycast boots through several frames before it calls set_image().  A
+    // no-op frame only has to release the acquired image; submitting a clear
+    // command buffer here was the first device queue submit and consistently
+    // crashed switchVK before the core ever rendered.  Present can consume
+    // the acquire semaphore directly, and the frame fence remains signalled
+    // because this path has no GPU submission.
+    if (!sourceImage && !hasOverlayDraw)
+    {
+        f.cmd.end();
+        s_overlayDrawData = nullptr;
+        vk::PresentInfoKHR present;
+        present.waitSemaphoreCount = 1;
+        present.pWaitSemaphores = &f.acquireSemaphore;
+        present.swapchainCount = 1;
+        present.pSwapchains = &s_swapchain;
+        present.pImageIndices = &s_currentImage;
+        try
+        {
+            if (trace)
+                VK_LOG_INFO("EndFrame[%u] boot frame direct present queue=%p", tracedFrames,
+                            static_cast<VkQueue>(s_presentQueue));
+            std::lock_guard<std::mutex> guard(s_queueMutex);
+            (void)s_presentQueue.presentKHR(present);
+        }
+        catch (const vk::SystemError& e)
+        {
+            VK_LOG_ERROR("boot frame presentKHR failed: %s", e.what());
+        }
+        s_frameInFlight = false;
+        s_currentFrame = (s_currentFrame + 1) % static_cast<uint32_t>(s_frames.size());
+        if (trace)
+        {
+            VK_LOG_INFO("EndFrame[%u] boot frame present complete", tracedFrames);
+            ++tracedFrames;
+        }
+        return;
+    }
+
+    TransitionLayout(f.cmd, swapImage,
+                     vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                     {}, vk::AccessFlagBits::eTransferWrite,
+                     vk::PipelineStageFlagBits::eTopOfPipe,
+                     vk::PipelineStageFlagBits::eTransfer);
+    if (trace)
+        VK_LOG_INFO("EndFrame[%u] swap transition complete", tracedFrames);
+
     if (sourceImage)
     {
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] source image=%p layout=%d reused=%d", tracedFrames,
+                        sourceImage->create_info.image, static_cast<int>(sourceImage->image_layout),
+                        reusingLastImage ? 1 : 0);
         if (reusingLastImage && s_lastImageFrame < s_frames.size() &&
             s_lastImageFrame != s_currentFrame && s_frames[s_lastImageFrame].inflightFence)
         {
@@ -942,6 +999,8 @@ void EndFrame()
                          vk::AccessFlagBits::eTransferRead,
                          vk::PipelineStageFlagBits::eAllCommands,
                          vk::PipelineStageFlagBits::eTransfer);
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] source transition complete", tracedFrames);
 
         // Blit core's image → swap image. Prefer the exact backing-image
         // extent supplied by our core. The AV/video_refresh extent is merely
@@ -1016,6 +1075,9 @@ void EndFrame()
         f.cmd.blitImage(coreImage, vk::ImageLayout::eTransferSrcOptimal,
                         swapImage, vk::ImageLayout::eTransferDstOptimal,
                         blit, vk::Filter::eLinear);
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] blit complete src=%ux%u dst=%d,%d-%d,%d", tracedFrames,
+                        srcW, srcH, dstX0, dstY0, dstX1, dstY1);
 
         // Restore core's image layout so the core can keep using it.
         TransitionLayout(f.cmd, coreImage,
@@ -1024,6 +1086,8 @@ void EndFrame()
                          vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
                          vk::PipelineStageFlagBits::eTransfer,
                          vk::PipelineStageFlagBits::eAllCommands);
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] source restore complete", tracedFrames);
     }
     else
     {
@@ -1031,10 +1095,11 @@ void EndFrame()
         vk::ClearColorValue clear(std::array<float, 4>{0.f, 0.f, 0.f, 1.f});
         vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
         f.cmd.clearColorImage(swapImage, vk::ImageLayout::eTransferDstOptimal, clear, range);
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] no core image, cleared", tracedFrames);
     }
 
-    if (s_overlayReady && s_overlayDrawData && s_overlayDrawData->TotalVtxCount > 0 &&
-        s_currentImage < s_overlayFramebuffers.size())
+    if (hasOverlayDraw)
     {
         TransitionLayout(f.cmd, swapImage,
                          vk::ImageLayout::eTransferDstOptimal,
@@ -1052,6 +1117,8 @@ void EndFrame()
         f.cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
         ImGui_ImplVulkan_RenderDrawData(s_overlayDrawData, static_cast<VkCommandBuffer>(f.cmd));
         f.cmd.endRenderPass();
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] overlay render complete", tracedFrames);
 
         TransitionLayout(f.cmd, swapImage,
                          vk::ImageLayout::eColorAttachmentOptimal,
@@ -1072,6 +1139,8 @@ void EndFrame()
     s_overlayDrawData = nullptr;
 
     f.cmd.end();
+    if (trace)
+        VK_LOG_INFO("EndFrame[%u] command buffer end complete", tracedFrames);
 
     // Submit: any core-supplied cmd buffers run first, then ours.
     std::vector<vk::CommandBuffer> submitCmds;
@@ -1099,9 +1168,15 @@ void EndFrame()
     submit.pSignalSemaphores = signalSems.data();
 
     {
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] submit begin cmds=%u signals=%u", tracedFrames,
+                        submit.commandBufferCount, submit.signalSemaphoreCount);
         std::lock_guard<std::mutex> guard(s_queueMutex);
+        s_device.resetFences(f.inflightFence);
         s_queue.submit(submit, f.inflightFence);
     }
+    if (trace)
+        VK_LOG_INFO("EndFrame[%u] submit complete", tracedFrames);
 
     // Present the acquired swap image (index returned by acquireNextImageKHR,
     // not the rotating frame slot).
@@ -1114,8 +1189,11 @@ void EndFrame()
 
     try
     {
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] present call queue=%p", tracedFrames,
+                        static_cast<VkQueue>(s_presentQueue));
         std::lock_guard<std::mutex> guard(s_queueMutex);
-        (void)s_queue.presentKHR(present);
+        (void)s_presentQueue.presentKHR(present);
     }
     catch (const vk::OutOfDateKHRError&)
     {
@@ -1128,6 +1206,11 @@ void EndFrame()
 
     s_frameInFlight = false;
     s_currentFrame = (s_currentFrame + 1) % static_cast<uint32_t>(s_frames.size());
+    if (trace)
+    {
+        VK_LOG_INFO("EndFrame[%u] present complete", tracedFrames);
+        ++tracedFrames;
+    }
 }
 
 bool IsFrameInFlight() { return s_frameInFlight; }

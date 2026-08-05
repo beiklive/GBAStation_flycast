@@ -46,7 +46,8 @@ const ImWchar *GetGBAStationMenuGlyphRanges(ImGuiIO &io) {
 
     ImFontGlyphRangesBuilder builder;
     builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
-    builder.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    // Core option names may contain glyphs outside ImGui's common Chinese set.
+    builder.AddRanges(io.Fonts->GetGlyphRangesChineseFull());
     builder.AddText(u8"返回游戏 保存状态 读取状态 金手指 画面设置 功能设置 重置游戏 退出游戏 核心设置 按键映射 "
                     u8"系统 BIOS 视频 渲染 性能 纹理 输入 网络 光枪 VMU 设置 语言 地区 自动 开启 关闭 "
                     u8"屏幕 过滤 分辨率 跳帧 宽屏 存档 槽位 游戏 模拟器 菜单 暂停 快进 确认 取消");

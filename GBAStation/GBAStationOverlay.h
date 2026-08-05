@@ -113,6 +113,7 @@ private:
     void RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize);
     void ScanForDiscs();
     void RenderRAAlerts(ImDrawList *dl, ImVec2 displaySize, float deltaTime);
+    void ActivateTab(int tab);
     void EnsureRAIconLoaded();
     void ResolveNotificationTextures();
     bool m_raIconLoadAttempted = false;
@@ -127,6 +128,7 @@ private:
 
     // Menu state
     int m_quickMenuSelection = 0;
+    bool m_sidebarFocused = true;
     int m_saveStateSlot = 0;
     bool m_isSaveMode = true;
     int m_settingsSelection = 0;
