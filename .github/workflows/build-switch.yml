@@ -20,7 +20,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
+          # The container mounts the checkout with a different owner.  Let the
+          # next shell step initialise submodules after marking it safe.
+          submodules: false
+
+      - name: Initialize recursive submodules
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --recursive
 
       - name: Install Switch build dependencies
         shell: bash
