@@ -1,0 +1,3 @@
+# shellcheck shell=bash
+# fetch-switchvk.sh always resolves this repository's latest GitHub Release.
+SWITCHVK_REPOSITORY="beiklive/switchVK"

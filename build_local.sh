@@ -38,19 +38,10 @@ if [[ -z "${SWITCH_NVK_ROOT:-}" ]]; then
     done
 fi
 
-if [[ ! -f "${SWITCH_NVK_ROOT:-}/lib/libvulkan.a" ]]; then
-    echo "Missing switchVK SDK. Set SWITCH_NVK_ROOT to an SDK containing lib/libvulkan.a." >&2
-    exit 1
-fi
-SWITCHVK_BUILD_ROOT="$SCRIPT_DIR/../switchVK/.ci-build"
-if [[ -d "$SWITCHVK_BUILD_ROOT/nxvk-source" ]]; then
-    export GBAStation_SWITCHVK_MESA_SOURCE="$SWITCHVK_BUILD_ROOT/nxvk-source"
-elif [[ -d "$SWITCHVK_BUILD_ROOT/mesa-26.1.4" ]]; then
-    export GBAStation_SWITCHVK_MESA_SOURCE="$SWITCHVK_BUILD_ROOT/mesa-26.1.4"
-else
-    echo "Missing sibling switchVK Mesa build inputs under ../switchVK/.ci-build." >&2
-    echo "Build switchVK first so its Mesa source tree is available to the shims." >&2
-    exit 1
+if [[ ! -f "${SWITCH_NVK_ROOT:-}/lib/libvulkan.a" ]] ||
+   [[ ! -f "${SWITCH_NVK_ROOT:-}/include/vulkan/vulkan.h" ]]; then
+	echo "Missing complete switchVK SDK. Set SWITCH_NVK_ROOT to an SDK containing include/ and lib/libvulkan.a." >&2
+	exit 1
 fi
 
 export MESA_NVK_DIR="$SWITCH_NVK_ROOT"

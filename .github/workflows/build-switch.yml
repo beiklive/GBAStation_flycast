@@ -22,32 +22,24 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Install Switch and switchVK dependencies
+      - name: Install Switch build dependencies
+        shell: bash
+        run: |
+          dkp-pacman -S --noconfirm --needed switch-dev switch-curl
+
+      - name: Fetch latest release switchVK SDK
+        id: switchvk-release
         shell: bash
         env:
           SWITCHVK_TOKEN: ${{ secrets.SWITCHVK_READ_TOKEN }}
-        run: |
-          dkp-pacman -S --noconfirm --needed switch-dev switch-curl
-          if [[ -n "${SWITCHVK_TOKEN}" ]]; then
-            git clone --depth=1 "https://x-access-token:${SWITCHVK_TOKEN}@github.com/beiklive/switchVK.git" "$GITHUB_WORKSPACE/../switchVK"
-          else
-            git clone --depth=1 https://github.com/beiklive/switchVK.git "$GITHUB_WORKSPACE/../switchVK"
-          fi
-          bash "$GITHUB_WORKSPACE/../switchVK/ci/install-linux-deps.sh"
-
-      - name: Prepare switchVK build inputs
-        shell: bash
-        run: |
-          SWITCHVK_CI_BUILD_ROOT="$GITHUB_WORKSPACE/../switchVK/.ci-build" \
-          MESA_26_1_4_PACKAGE="$GITHUB_WORKSPACE/../switchVK/nvk-switch-26.1.4" \
-            bash "$GITHUB_WORKSPACE/../switchVK/ci/build-sdk-linux.sh"
+          SWITCHVK_VARIANT: release
+        run: bash ci/fetch-switchvk.sh "$RUNNER_TEMP/switchvk-sdk-release"
 
       - name: Build release NRO
         shell: bash
         run: |
           chmod +x build_local.sh build_flycast_nro.sh
-          SWITCH_NVK_ROOT="$GITHUB_WORKSPACE/../switchVK/nvk-switch-26.1.4" \
-            bash build_local.sh --clean -j "$(nproc)"
+          bash build_local.sh --clean -j "$(nproc)"
           test -s GBAStationFlycastStub.nro
           sha256sum GBAStationFlycastStub.nro > GBAStationFlycastStub.nro.sha256
 

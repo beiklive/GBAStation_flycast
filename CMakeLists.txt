@@ -221,64 +221,30 @@ if(NINTENDO_SWITCH)
 			target_include_directories(${PROJECT_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
 			target_link_libraries(${PROJECT_NAME} PRIVATE -lcurl -lSDL2_mixer -lmpg123 -lmodplug -lopusfile -lopus -lvorbisidec -logg SDL2)
 
-			# NVK (loaderless libvulkan + nouveau DRM) - replaces the EGL/GL
-			# Mesa stack. Matches dolphin's standalone NRO build.
+			# Use the complete, released switchVK SDK just as GBAStation_3DS does.
 			if(NOT DEFINED MESA_NVK_DIR)
 				set(MESA_NVK_DIR "/nvk-build" CACHE PATH "Path to Mesa NVK build")
 			endif()
 			if(EXISTS "${MESA_NVK_DIR}/src/nouveau/vulkan/libvulkan.a")
 				set(GBAStation_NVK_LIBRARY "${MESA_NVK_DIR}/src/nouveau/vulkan/libvulkan.a")
-				set(GBAStation_NVK_EXTRA_LIBS -ldrm_nouveau)
 			elseif(EXISTS "${MESA_NVK_DIR}/lib/libvulkan.a")
 				set(GBAStation_NVK_LIBRARY "${MESA_NVK_DIR}/lib/libvulkan.a")
-				set(GBAStation_NVK_EXTRA_LIBS)
 			else()
 				message(FATAL_ERROR "Could not find NVK libvulkan.a under ${MESA_NVK_DIR}")
 			endif()
-			# Mesa's static ICD expects the loader and DRM syscall boundary supplied by
-			# switchVK's winsys shims.  Keep these tied to switchVK; pnxvk belongs only
-			# to Dekopon and is intentionally not referenced here.
-			set(GBAStation_SWITCHVK_ROOT "${CMAKE_SOURCE_DIR}/../switchVK")
-			if(NOT DEFINED GBAStation_SWITCHVK_MESA_SOURCE)
-				set(GBAStation_SWITCHVK_MESA_SOURCE "${GBAStation_SWITCHVK_ROOT}/.ci-build/nxvk-source")
-				if(NOT EXISTS "${GBAStation_SWITCHVK_MESA_SOURCE}" AND
-				   EXISTS "${GBAStation_SWITCHVK_ROOT}/.ci-build/mesa-26.1.4")
-					set(GBAStation_SWITCHVK_MESA_SOURCE "${GBAStation_SWITCHVK_ROOT}/.ci-build/mesa-26.1.4")
-				endif()
+			if(EXISTS "${MESA_NVK_DIR}/include/vulkan/vulkan.h")
+				target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE
+					"${MESA_NVK_DIR}/include")
 			endif()
-			set(GBAStation_SWITCHVK_CROSS_INCLUDE "${GBAStation_SWITCHVK_ROOT}/.ci-build/nxvk-cross-include")
-			target_sources(${PROJECT_NAME} PRIVATE
-				"${GBAStation_SWITCHVK_ROOT}/winsys/drm_shim.c"
-				"${GBAStation_SWITCHVK_ROOT}/winsys/switch_libc_shim.c"
-				"${GBAStation_SWITCHVK_ROOT}/winsys/nvk_loaderless_shim.c"
-				"${GBAStation_SWITCHVK_ROOT}/compat/compat.c")
-			target_include_directories(${PROJECT_NAME} PRIVATE
-				"${GBAStation_SWITCHVK_ROOT}/winsys"
-				"${GBAStation_SWITCHVK_ROOT}/compat"
-				"${GBAStation_SWITCHVK_MESA_SOURCE}/src/nouveau/drm")
-			if(EXISTS "${GBAStation_SWITCHVK_CROSS_INCLUDE}")
-				target_include_directories(${PROJECT_NAME} PRIVATE
-					"${GBAStation_SWITCHVK_CROSS_INCLUDE}")
-			elseif(EXISTS "/usr/include/libdrm")
-				target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/libdrm)
-			endif()
-			target_compile_definitions(${PROJECT_NAME} PRIVATE _GNU_SOURCE _DEFAULT_SOURCE NVK_SHIM_EXTERNAL_POSIX_STUBS DRM_SHIM_DEBUG)
-			target_compile_options(${PROJECT_NAME} PRIVATE
-				-idirafter "${GBAStation_SWITCHVK_MESA_SOURCE}/include")
 			target_link_libraries(${PROJECT_NAME} PRIVATE
 				"-Wl,--whole-archive"
 				${GBAStation_NVK_LIBRARY}
 				"-Wl,--no-whole-archive"
-				${GBAStation_NVK_EXTRA_LIBS}
 				-lzstd
 				-lz)
 			target_link_options(${PROJECT_NAME} PRIVATE
-				# libvulkan.a packages Rust object members with intentional duplicate
-				# monomorphizations; this matches the PPSSPP Switch target's linker mode.
 				-Wl,--allow-multiple-definition
-				-Wl,-u,vk_icdGetInstanceProcAddr
-				-Wl,--wrap=open -Wl,--wrap=close -Wl,--wrap=stat -Wl,--wrap=lstat
-				-Wl,--wrap=vk_icdGetInstanceProcAddr)
+				-Wl,-u,vk_icdGetInstanceProcAddr)
 
 			# ImGui renders the GBAStation overlay into the Vulkan swapchain.
 			target_sources(${PROJECT_NAME} PRIVATE
