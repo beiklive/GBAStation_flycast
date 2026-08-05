@@ -239,7 +239,13 @@ if(NINTENDO_SWITCH)
 			# switchVK's winsys shims.  Keep these tied to switchVK; pnxvk belongs only
 			# to Dekopon and is intentionally not referenced here.
 			set(GBAStation_SWITCHVK_ROOT "${CMAKE_SOURCE_DIR}/../switchVK")
-			set(GBAStation_SWITCHVK_MESA_SOURCE "${GBAStation_SWITCHVK_ROOT}/.ci-build/nxvk-source")
+			if(NOT DEFINED GBAStation_SWITCHVK_MESA_SOURCE)
+				set(GBAStation_SWITCHVK_MESA_SOURCE "${GBAStation_SWITCHVK_ROOT}/.ci-build/nxvk-source")
+				if(NOT EXISTS "${GBAStation_SWITCHVK_MESA_SOURCE}" AND
+				   EXISTS "${GBAStation_SWITCHVK_ROOT}/.ci-build/mesa-26.1.4")
+					set(GBAStation_SWITCHVK_MESA_SOURCE "${GBAStation_SWITCHVK_ROOT}/.ci-build/mesa-26.1.4")
+				endif()
+			endif()
 			set(GBAStation_SWITCHVK_CROSS_INCLUDE "${GBAStation_SWITCHVK_ROOT}/.ci-build/nxvk-cross-include")
 			target_sources(${PROJECT_NAME} PRIVATE
 				"${GBAStation_SWITCHVK_ROOT}/winsys/drm_shim.c"
@@ -249,8 +255,13 @@ if(NINTENDO_SWITCH)
 			target_include_directories(${PROJECT_NAME} PRIVATE
 				"${GBAStation_SWITCHVK_ROOT}/winsys"
 				"${GBAStation_SWITCHVK_ROOT}/compat"
-				"${GBAStation_SWITCHVK_CROSS_INCLUDE}"
 				"${GBAStation_SWITCHVK_MESA_SOURCE}/src/nouveau/drm")
+			if(EXISTS "${GBAStation_SWITCHVK_CROSS_INCLUDE}")
+				target_include_directories(${PROJECT_NAME} PRIVATE
+					"${GBAStation_SWITCHVK_CROSS_INCLUDE}")
+			elseif(EXISTS "/usr/include/libdrm")
+				target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/libdrm)
+			endif()
 			target_compile_definitions(${PROJECT_NAME} PRIVATE _GNU_SOURCE _DEFAULT_SOURCE NVK_SHIM_EXTERNAL_POSIX_STUBS DRM_SHIM_DEBUG)
 			target_compile_options(${PROJECT_NAME} PRIVATE
 				-idirafter "${GBAStation_SWITCHVK_MESA_SOURCE}/include")

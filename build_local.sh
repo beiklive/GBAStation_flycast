@@ -42,9 +42,14 @@ if [[ ! -f "${SWITCH_NVK_ROOT:-}/lib/libvulkan.a" ]]; then
     echo "Missing switchVK SDK. Set SWITCH_NVK_ROOT to an SDK containing lib/libvulkan.a." >&2
     exit 1
 fi
-if [[ ! -d "$SCRIPT_DIR/../switchVK/.ci-build/nxvk-source" ]]; then
-    echo "Missing sibling switchVK build inputs at ../switchVK/.ci-build/nxvk-source." >&2
-    echo "Build switchVK first, or use the core GitHub Action which prepares them." >&2
+SWITCHVK_BUILD_ROOT="$SCRIPT_DIR/../switchVK/.ci-build"
+if [[ -d "$SWITCHVK_BUILD_ROOT/nxvk-source" ]]; then
+    export GBAStation_SWITCHVK_MESA_SOURCE="$SWITCHVK_BUILD_ROOT/nxvk-source"
+elif [[ -d "$SWITCHVK_BUILD_ROOT/mesa-26.1.4" ]]; then
+    export GBAStation_SWITCHVK_MESA_SOURCE="$SWITCHVK_BUILD_ROOT/mesa-26.1.4"
+else
+    echo "Missing sibling switchVK Mesa build inputs under ../switchVK/.ci-build." >&2
+    echo "Build switchVK first so its Mesa source tree is available to the shims." >&2
     exit 1
 fi
 
