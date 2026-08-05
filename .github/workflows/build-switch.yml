@@ -27,8 +27,13 @@ jobs:
       - name: Initialize recursive submodules
         shell: bash
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --recursive
+          # The container sees the checkout as owned by the runner.  All
+          # repositories below this ephemeral workspace need to be trusted so
+          # recursive submodule commands can enter them.
+          git config --global --add safe.directory '*'
+          git submodule sync --recursive
+          git submodule update --init --recursive --force
+          test -f core/deps/glslang/CMakeLists.txt
 
       - name: Install Switch build dependencies
         shell: bash
