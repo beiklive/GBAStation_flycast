@@ -33,6 +33,16 @@ jobs:
           git config --global --add safe.directory '*'
           git submodule sync --recursive
           git submodule update --init --recursive --force
+
+          # This source tree declares glslang in .gitmodules but the current
+          # Git tree has no gitlink for it, so submodule update cannot fetch
+          # it.  Keep the CI build reproducible with the version used locally.
+          glslang_revision=fc9889c889561c5882e83819dcaffef5ed45529b
+          rm -rf core/deps/glslang
+          git clone --filter=blob:none https://github.com/KhronosGroup/glslang.git \
+            core/deps/glslang
+          git -C core/deps/glslang checkout --detach "$glslang_revision"
+          test "$(git -C core/deps/glslang rev-parse HEAD)" = "$glslang_revision"
           test -f core/deps/glslang/CMakeLists.txt
 
       - name: Install Switch build dependencies
