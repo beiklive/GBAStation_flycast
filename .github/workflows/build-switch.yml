@@ -39,7 +39,8 @@ jobs:
         shell: bash
         run: |
           chmod +x build_local.sh build_flycast_nro.sh
-          bash build_local.sh --clean -j "$(nproc)"
+          SWITCH_NVK_ROOT="${{ steps.switchvk-release.outputs.switch_nvk_root }}" \
+            bash build_local.sh --clean -j "$(nproc)"
           test -s GBAStationFlycastStub.nro
           sha256sum GBAStationFlycastStub.nro > GBAStationFlycastStub.nro.sha256
 
