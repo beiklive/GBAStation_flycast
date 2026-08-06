@@ -177,6 +177,13 @@ public:
         struct stat st;
         return stat(StatePath(slot).c_str(), &st) == 0;
     }
+    time_t StateSlotTime(int slot) override
+    {
+        struct stat st;
+        if (stat(StatePath(slot).c_str(), &st) == 0)
+            return st.st_mtime;
+        return 0;
+    }
     void SaveStateSlot(int slot) override
     {
         if (core_) core_->SaveState(StatePath(slot));

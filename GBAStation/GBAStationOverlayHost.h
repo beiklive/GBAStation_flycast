@@ -62,6 +62,9 @@ public:
     virtual std::string GetGamePath() = 0;
     virtual bool IsGameLoaded() = 0;
     virtual bool StateSlotExists(int slot) = 0;
+    // Modification time of a save-state file, 0 when absent (for the slot list
+    // timestamp line).
+    virtual time_t StateSlotTime(int slot) { return 0; }
     virtual void SaveStateSlot(int slot) = 0;
     virtual void LoadStateSlot(int slot) = 0;
     virtual void SwapDisc(const std::string &path) = 0;

@@ -15,6 +15,7 @@
 #include "GBAStationTranslationManager.h"
 #include <algorithm>
 #include <cmath>
+#include <ctime>
 #include <dirent.h>
 #include <fstream>
 #include <map>
@@ -260,7 +261,7 @@ void GBAStationOverlay::DrawFocusBorder(ImVec2 min, ImVec2 max, float thickness)
 {
     ImDrawList *fg = ImGui::GetForegroundDrawList();
     const float x = min.x, y = min.y, w = max.x - min.x, h = max.y - min.y;
-    const float rounding = 8.0f * ImGui::GetIO().FontGlobalScale;
+    const float rounding = 0.0f;
     if (m_focusTexture)
     {
         // Animated flowing gradient: advance a UV window around the border so
@@ -1229,7 +1230,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
             else if (focused)
             {
                 // Focus-scroll: slide the text through the fixed window.
-                const float scroll = std::fmod((float)(SDL_GetTicks64() % 4000) / 1000.0f, 1.0f);
+                const float scroll = std::fmod((float)(SDL_GetTicks64() % 8000) / 1000.0f, 1.0f);
                 const float travel = valueW + valueMaxW;
                 const float offset = (valueW + valueMaxW) * 0.5f - scroll * travel;
                 dl->PushClipRect(ImVec2(valueCenterX - valueMaxW * 0.5f, y),
@@ -1243,11 +1244,11 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 // Truncate with an ellipsis when idle.
                 std::string clipped = value;
                 while (!clipped.empty() &&
-                       font->CalcTextSizeA(valueSize, FLT_MAX, 0.0f, (clipped + "…").c_str()).x > valueMaxW)
+                       font->CalcTextSizeA(valueSize, FLT_MAX, 0.0f, (clipped + "...").c_str()).x > valueMaxW)
                 {
                     clipped.pop_back();
                 }
-                clipped += "…";
+                clipped += "...";
                 const float cw = font->CalcTextSizeA(valueSize, FLT_MAX, 0.0f, clipped.c_str()).x;
                 dl->AddText(font, valueSize, ImVec2(valueCenterX - cw * 0.5f, y + rowH * 0.5f - valueSize * 0.43f),
                             cyan, clipped.c_str());
@@ -1266,9 +1267,8 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const bool inContent = !m_sidebarFocused;
     if (m_currentMenu == OverlayMenu::SaveStates)
     {
-        // Two-column scrolling grid of save slots (like the launcher's
-        // GameMenuView): icon + slot name + status per cell, focused cell
-        // kept centred inside [viewTop, viewBottom].
+        // Two-column scrolling grid of save slots: snapshot thumbnail on the
+        // left, slot name + save time on the right.
         const int total = 10;
         constexpr int kColumns = 2;
         const float cellW = (contentW - 14.0f * scale) * 0.5f;
@@ -1276,11 +1276,10 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         const float cellGapX = 14.0f * scale;
         const float cellGapY = 10.0f * scale;
         const int gridH = (total + kColumns - 1) / kColumns;
-        // Viewport is [viewTop, viewBottom]; render one row past the visible
-        // window so the selection can scroll (focus stays centred).
+        // Visible rows fit the viewport; the focused row scrolls to centre.
         const float viewportH = viewBottom - viewTop;
         const int visibleRows = std::max(1, (int)(viewportH / (cellH + cellGapY)));
-        const int kRows = std::min(gridH, visibleRows + 1);
+        const int kRows = std::min(gridH, visibleRows);
         const int selectedRow = m_saveStateSlot / kColumns;
         const int firstRow = std::clamp(selectedRow - kRows / 2, 0, std::max(0, gridH - kRows));
         for (int r = 0; r < kRows; ++r)
@@ -1307,10 +1306,9 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 {
                     dl->AddRect(cellMin, cellMax, rowBorder, 8.0f * scale, 0, 1.0f * scale);
                 }
-                // Snapshot placeholder on the right half (screenshots land
-                // here later, mirroring the launcher's save-state items).
-                const float snapX = x + cellW * 0.55f;
-                const float snapW = cellW * 0.45f - 10.0f * scale;
+                // Snapshot thumbnail on the left (screenshots land here later).
+                const float snapX = x + 8.0f * scale;
+                const float snapW = cellW * 0.40f - 8.0f * scale;
                 const float snapY = y + 8.0f * scale;
                 const float snapH = cellH - 16.0f * scale;
                 dl->AddRectFilled(ImVec2(snapX, snapY), ImVec2(snapX + snapW, snapY + snapH),
@@ -1324,20 +1322,26 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                             ImVec2(snapX + snapW * 0.5f - snapIconSize * 0.5f,
                                    snapY + snapH * 0.5f - snapIconSize * 0.43f),
                             IM_COL32(160, 200, 230, (int)(110.0f * ease)), snapIcon);
-                // Left half: icon + title + status.
-                const float iconX = x + 14.0f * scale;
-                const float iconCenterY = y + cellH * 0.5f;
-                char icon[8];
-                EncodeUtf8(icon, 0xE161);
-                dl->AddText(font, 34.0f * scale, ImVec2(iconX, iconCenterY - 34.0f * scale * 0.43f),
-                            exists ? (focused ? white : cyan) : muted, icon);
-                const float textX = iconX + 44.0f * scale;
+                // Right side: slot name + save time.
+                const float textX = snapX + snapW + 12.0f * scale;
                 const std::string title = "存档槽 " + std::to_string(slot + 1);
-                dl->AddText(font, 20.0f * scale, ImVec2(textX, y + 24.0f * scale),
+                dl->AddText(font, 20.0f * scale, ImVec2(textX, y + 26.0f * scale),
                             focused ? white : muted, title.c_str());
-                const char *status = exists ? "已有存档" : "空存档槽";
-                dl->AddText(font, 16.0f * scale, ImVec2(textX, y + cellH - 40.0f * scale),
-                            exists ? cyan : muted, status);
+                if (exists)
+                {
+                    char timeBuf[32]{};
+                    const time_t mtime = m_host ? m_host->StateSlotTime(slot) : 0;
+                    std::tm tm{};
+                    localtime_r(&mtime, &tm);
+                    std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M", &tm);
+                    dl->AddText(font, 16.0f * scale, ImVec2(textX, y + cellH - 42.0f * scale),
+                                cyan, timeBuf);
+                }
+                else
+                {
+                    dl->AddText(font, 16.0f * scale, ImVec2(textX, y + cellH - 42.0f * scale),
+                                muted, "空存档槽");
+                }
             }
         }
         // Scroll position hint above the footer (右下角提示文字上方).
