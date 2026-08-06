@@ -213,11 +213,10 @@ uint64_t MapButtons(u64 hid)
 
 float OverlayModeScale()
 {
-#ifdef __SWITCH__
-    return appletGetOperationMode() == AppletOperationMode_Handheld ? 1.5f : 1.0f;
-#else
+    // The overlay is laid out in the swapchain's native resolution (720p on
+    // Switch) — scaling by operation mode was a dock/handheld misunderstanding
+    // that blew the menu up to ~1080p and pushed it off-screen.  Return 1.0.
     return 1.0f;
-#endif
 }
 
 Main::Main(CoreRuntime &runtime, LogCallback log)

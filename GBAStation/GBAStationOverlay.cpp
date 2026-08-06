@@ -1142,7 +1142,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         // ImGui AddText's pos.y is the glyph top; the 3DS renderer passes a
         // baseline (y + 38 for a 58px row).  Compensate so the text is
         // vertically centered like the icon beside it.
-        const float textY = y + itemH * 0.66f - 21.0f * scale * 0.86f;
+        const float textY = y + itemH * 0.5f - 21.0f * scale * 0.5f;
         dl->AddText(font, 25.0f * scale, ImVec2(sidebarX + 34.0f * scale, y + itemH * 0.5f - 12.5f * scale),
                     selected ? white : muted, iconBuf);
         dl->AddText(font, 21.0f * scale, ImVec2(sidebarX + 64.0f * scale, textY),
@@ -1164,9 +1164,9 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const float rowH = 48.0f * scale;
     const float rowGap = 4.0f * scale;
 
-    dl->AddText(font, 27.0f * scale, ImVec2(contentX, 150.0f * scale), white, tabs[activeTab]);
-    dl->AddRectFilled(ImVec2(contentX, 190.0f * scale),
-                      ImVec2(contentX + contentW, 191.0f * scale), IM_COL32(0, 122, 204, (int)(71.0f * ease)));
+    dl->AddText(font, 27.0f * scale, ImVec2(contentX, 116.0f * scale), white, tabs[activeTab]);
+    dl->AddRectFilled(ImVec2(contentX, 162.0f * scale),
+                      ImVec2(contentX + contentW, 163.0f * scale), IM_COL32(0, 122, 204, (int)(71.0f * ease)));
 
     auto drawRow = [&](int row, bool focused, const char *iconUtf8, const std::string &label,
                        const std::string &value, bool selector) {
@@ -1186,28 +1186,28 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
             dl->AddRect(rowMin, rowMax, rowBorder, 0.0f, 0, 1.0f * scale);
         }
         // AddText's y is the glyph top: compensate for the 3DS baseline (y+32).
-        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 24.0f * scale, y + rowH * 0.66f - 20.0f * scale * 0.86f),
+        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 24.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.5f),
                     selector ? cyan : (focused ? white : muted), iconUtf8);
-        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 46.0f * scale, y + rowH * 0.66f - 20.0f * scale * 0.86f),
+        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 46.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.5f),
                     focused ? white : muted, label.c_str());
         if (selector)
         {
             char iconL[8], iconR[8];
             EncodeUtf8(iconL, 0xE0E4);
             EncodeUtf8(iconR, 0xE0E5);
-            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 194.0f * scale, y + rowH * 0.66f - 26.0f * scale * 0.86f),
+            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 194.0f * scale, y + rowH * 0.5f - 26.0f * scale * 0.5f),
                         cyan, iconL);
             const float valueW = font->CalcTextSizeA(18.0f * scale, FLT_MAX, 0.0f, value.c_str()).x;
             dl->AddText(font, 18.0f * scale,
-                        ImVec2(contentX + contentW - 110.0f * scale - valueW * 0.5f, y + rowH * 0.66f - 18.0f * scale * 0.86f),
+                        ImVec2(contentX + contentW - 110.0f * scale - valueW * 0.5f, y + rowH * 0.5f - 18.0f * scale * 0.5f),
                         cyan, value.c_str());
-            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 24.0f * scale, y + rowH * 0.66f - 26.0f * scale * 0.86f),
+            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 24.0f * scale, y + rowH * 0.5f - 26.0f * scale * 0.5f),
                         cyan, iconR);
         }
         else
         {
             const float valueW = font->CalcTextSizeA(18.0f * scale, FLT_MAX, 0.0f, value.c_str()).x;
-            dl->AddText(font, 18.0f * scale, ImVec2(contentX + contentW - valueW - 18.0f * scale, y + rowH * 0.66f - 18.0f * scale * 0.86f),
+            dl->AddText(font, 18.0f * scale, ImVec2(contentX + contentW - valueW - 18.0f * scale, y + rowH * 0.5f - 18.0f * scale * 0.5f),
                         cyan, value.c_str());
         }
     };
@@ -1215,17 +1215,55 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const bool inContent = !m_sidebarFocused;
     if (m_currentMenu == OverlayMenu::SaveStates)
     {
+        // Two-column scrolling grid of save slots (like the launcher's
+        // GameMenuView): icon + slot name + status per cell, focused cell
+        // kept centred inside [viewTop, viewBottom].
         const int total = 10;
-        const int visible = std::min(9, total);
-        const int firstSlot = std::clamp(m_saveStateSlot - visible / 2, 0, std::max(0, total - visible));
-        for (int row = 0; row < visible; ++row)
+        constexpr int kColumns = 2;
+        constexpr int kRows = 5;
+        const float cellW = (contentW - 14.0f * scale) * 0.5f;
+        const float cellH = 88.0f * scale;
+        const float cellGapX = 14.0f * scale;
+        const float cellGapY = 8.0f * scale;
+        const int gridH = (total + kColumns - 1) / kColumns;
+        const int selectedRow = m_saveStateSlot / kColumns;
+        const int firstRow = std::clamp(selectedRow - kRows / 2, 0, std::max(0, gridH - kRows));
+        for (int r = 0; r < kRows; ++r)
         {
-            const int slot = firstSlot + row;
-            const bool exists = m_host && m_host->IsGameLoaded() && m_host->StateSlotExists(slot);
-            char icon[8];
-            EncodeUtf8(icon, 0xE161);
-            drawRow(row, inContent && slot == m_saveStateSlot, icon,
-                    "存档槽 " + std::to_string(slot + 1), exists ? "已有存档" : "空", false);
+            const int row = firstRow + r;
+            for (int c = 0; c < kColumns; ++c)
+            {
+                const int slot = row * kColumns + c;
+                if (slot >= total)
+                    continue;
+                const float x = contentX + c * (cellW + cellGapX);
+                const float y = viewTop + r * (cellH + cellGapY);
+                const bool focused = inContent && slot == m_saveStateSlot;
+                const bool exists = m_host && m_host->IsGameLoaded() && m_host->StateSlotExists(slot);
+                const ImVec2 cellMin(x, y), cellMax(x + cellW, y + cellH);
+                dl->AddRectFilled(cellMin, cellMax, focused ? focusBg : rowBg, 6.0f * scale);
+                if (focused)
+                {
+                    DrawFocusBorder(cellMin, cellMax, 3.0f * scale);
+                }
+                else
+                {
+                    dl->AddRect(cellMin, cellMax, rowBorder, 6.0f * scale, 0, 1.0f * scale);
+                }
+                const float iconX = x + 14.0f * scale;
+                const float iconCenterY = y + cellH * 0.5f;
+                char icon[8];
+                EncodeUtf8(icon, exists ? 0xE161 : 0xE2C7);
+                dl->AddText(font, 34.0f * scale, ImVec2(iconX, iconCenterY - 34.0f * scale * 0.5f),
+                            exists ? (focused ? white : cyan) : muted, icon);
+                const float textX = iconX + 44.0f * scale;
+                const std::string title = "存档槽 " + std::to_string(slot + 1);
+                dl->AddText(font, 20.0f * scale, ImVec2(textX, y + 22.0f * scale),
+                            focused ? white : muted, title.c_str());
+                const char *status = exists ? "已有存档" : "空存档槽";
+                dl->AddText(font, 16.0f * scale, ImVec2(textX, y + cellH - 36.0f * scale),
+                            exists ? cyan : muted, status);
+            }
         }
     }
     else if (m_currentMenu == OverlayMenu::Settings)
@@ -1674,10 +1712,10 @@ void GBAStationOverlay::RenderHelpersBar(ImDrawList *dl, ImVec2 displaySize)
     EncodeUtf8(iconB, 0xE0E1);
     EncodeUtf8(iconA, 0xE0E0);
 const float baseY = displaySize.y - 42.0f * scale;
-dl->AddText(font, 27.0f * scale, ImVec2(1020.0f * scale, baseY - 27.0f * scale * 0.86f), hintColor, iconB);
-dl->AddText(font, 19.0f * scale, ImVec2(1042.0f * scale, baseY - 19.0f * scale * 0.86f), hintColor, bLabel);
-dl->AddText(font, 27.0f * scale, ImVec2(1152.0f * scale, baseY - 27.0f * scale * 0.86f), hintColor, iconA);
-dl->AddText(font, 19.0f * scale, ImVec2(1174.0f * scale, baseY - 19.0f * scale * 0.86f), hintColor, aLabel);
+dl->AddText(font, 27.0f * scale, ImVec2(1020.0f * scale, baseY - 27.0f * scale * 0.5f), hintColor, iconB);
+dl->AddText(font, 19.0f * scale, ImVec2(1042.0f * scale, baseY - 19.0f * scale * 0.5f), hintColor, bLabel);
+dl->AddText(font, 27.0f * scale, ImVec2(1152.0f * scale, baseY - 27.0f * scale * 0.5f), hintColor, iconA);
+dl->AddText(font, 19.0f * scale, ImVec2(1174.0f * scale, baseY - 19.0f * scale * 0.5f), hintColor, aLabel);
 }
 
 //==============================================================================
@@ -1689,7 +1727,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     using namespace GBAStation;
 
     const uint64_t buttons = input.buttons;
-    const uint64_t pressed = input.pressed;
+    [[maybe_unused]] const uint64_t pressed = input.pressed;
 #ifdef __SWITCH__
     const uint64_t navButtons = input.rawButtons;
     const uint64_t navPressed = input.rawPressed;
@@ -1801,8 +1839,15 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
 
     if (leftPressed)
     {
-        m_sidebarFocused = true;
-        return true;
+        // Left adjusts the focused setting or moves between save-slot columns;
+        // it never returns to the sidebar (B does).  Without this the LR
+        // selectors could not be changed — the first Left would pop the focus
+        // back to the tabs.
+        if (m_currentMenu != OverlayMenu::Settings && m_currentMenu != OverlayMenu::SaveStates)
+        {
+            m_sidebarFocused = true;
+            return true;
+        }
     }
 
     // Minus = reset, but only after the menu's been open a moment (else the
@@ -1841,7 +1886,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::SaveStates)
         {
-            m_saveStateSlot = (m_saveStateSlot + 9) % 10;
+            m_saveStateSlot = (m_saveStateSlot + 8) % 10; // up = previous row (2 columns)
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
         else if (m_currentMenu == OverlayMenu::Settings)
@@ -1877,7 +1922,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::SaveStates)
         {
-            m_saveStateSlot = (m_saveStateSlot + 1) % 10;
+            m_saveStateSlot = (m_saveStateSlot + 2) % 10; // down = next row (2 columns)
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
         else if (m_currentMenu == OverlayMenu::Settings)
@@ -1903,7 +1948,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
     }
-    // Left/Right (Settings Only)
+    // Left/Right (Settings: adjust value; SaveStates: move between columns)
     bool directionChanged = false;
     int direction = 0;
 
@@ -1916,6 +1961,12 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     {
         direction = 1;
         directionChanged = true;
+    }
+
+    if (directionChanged && m_currentMenu == OverlayMenu::SaveStates)
+    {
+        m_saveStateSlot = (m_saveStateSlot + direction + 10) % 10;
+        GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
     }
 
     if (directionChanged && m_currentMenu == OverlayMenu::Settings)
