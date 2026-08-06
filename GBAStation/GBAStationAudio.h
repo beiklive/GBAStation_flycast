@@ -6,7 +6,9 @@
 
 #include <SDL.h>
 #include <SDL_mixer.h>
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -123,6 +125,7 @@ public:
             return true;
 
         s_instance = this;
+        SynthesizeUiSounds();
 
         if (GBAStationConfig::USE_SDLQUEUEAUDIO)
         {
@@ -218,6 +221,7 @@ public:
 
         int16_t samples[2] = {left, right};
         MixTrophy(samples, 2);
+        MixUi(samples, 2);
 
         if (GBAStationConfig::USE_SDLQUEUEAUDIO)
         {
@@ -249,10 +253,14 @@ public:
 
         size_t samplesNeeded = frames * CHANNELS;
         const bool mixTrophy = m_trophyActive.load(std::memory_order_relaxed);
-        if (mixTrophy)
+        const bool mixUi = m_uiActive.load(std::memory_order_relaxed);
+        if (mixTrophy || mixUi)
         {
             m_mixScratch.assign(data, data + samplesNeeded);
-            MixTrophy(m_mixScratch.data(), samplesNeeded);
+            if (mixTrophy)
+                MixTrophy(m_mixScratch.data(), samplesNeeded);
+            if (mixUi)
+                MixUi(m_mixScratch.data(), samplesNeeded);
             data = m_mixScratch.data();
         }
 
@@ -367,6 +375,32 @@ public:
         m_trophyActive.store(true, std::memory_order_relaxed);
     }
 
+    //--------------------------------------------------------------------------
+    // UI sound effects (synthesized beeps, like the 3DS frontend).
+    //--------------------------------------------------------------------------
+    enum class UiSound
+    {
+        Focus,
+        Confirm,
+        Cancel,
+    };
+
+    void PlayUiSound(UiSound sound)
+    {
+        const int index = static_cast<int>(sound);
+        if (index < 0 || index > 2 || m_uiPCM[index].empty())
+            return;
+        m_uiCursor.store(0, std::memory_order_relaxed);
+        m_uiActive.store(true, std::memory_order_relaxed);
+        m_uiIndex.store(index, std::memory_order_relaxed);
+    }
+
+    static void PlayUiSoundGlobal(UiSound sound)
+    {
+        if (s_instance)
+            s_instance->PlayUiSound(sound);
+    }
+
     // Static forwarders so GBAStationCore can trigger the chime without plumbing a
     // GBAStationAudio pointer through the core.
     static bool LoadTrophyGlobal(const char *path) { return s_instance ? s_instance->LoadTrophy(path) : false; }
@@ -393,6 +427,57 @@ private:
             dst[i] = static_cast<int16_t>(s);
         }
         m_trophyCursor.store(cursor, std::memory_order_relaxed);
+    }
+
+    /// Mix the active UI beep into an interleaved S16 block in place.
+    void MixUi(int16_t *dst, size_t numSamples)
+    {
+        if (!m_uiActive.load(std::memory_order_relaxed))
+            return;
+        const int index = m_uiIndex.load(std::memory_order_relaxed);
+        if (index < 0 || index > 2 || m_uiPCM[index].empty())
+            return;
+        size_t cursor = m_uiCursor.load(std::memory_order_relaxed);
+        const size_t total = m_uiPCM[index].size();
+        for (size_t i = 0; i < numSamples; ++i)
+        {
+            if (cursor >= total)
+            {
+                m_uiActive.store(false, std::memory_order_relaxed);
+                break;
+            }
+            int s = static_cast<int>(dst[i]) + static_cast<int>(m_uiPCM[index][cursor++]);
+            if (s > 32767) s = 32767;
+            else if (s < -32768) s = -32768;
+            dst[i] = static_cast<int16_t>(s);
+        }
+        m_uiCursor.store(cursor, std::memory_order_relaxed);
+    }
+
+    /// Synthesize short UI ticks (focus/confirm/cancel) at SAMPLE_RATE.
+    void SynthesizeUiSounds()
+    {
+        constexpr float kFreqs[3] = {1320.0f, 1760.0f, 880.0f};
+        constexpr float kDurations[3] = {0.035f, 0.055f, 0.045f};
+        constexpr float kVolumes[3] = {0.22f, 0.26f, 0.22f};
+        for (int s = 0; s < 3; ++s)
+        {
+            m_uiPCM[s].clear();
+            const int count = static_cast<int>(kDurations[s] * static_cast<float>(SAMPLE_RATE));
+            m_uiPCM[s].reserve(static_cast<size_t>(count) * 2);
+            for (int i = 0; i < count; ++i)
+            {
+                const float t = static_cast<float>(i) / static_cast<float>(SAMPLE_RATE);
+                const float env = std::exp(-t * 55.0f);
+                const float v = std::sin(6.2831853f * kFreqs[s] * t) * kVolumes[s] * env;
+                const int16_t sample = static_cast<int16_t>(
+                    std::clamp(static_cast<int>(v * 32767.0f), -32768, 32767));
+                m_uiPCM[s].push_back(sample);
+                m_uiPCM[s].push_back(sample);
+            }
+        }
+        m_uiCursor.store(0, std::memory_order_relaxed);
+        m_uiActive.store(false, std::memory_order_relaxed);
     }
 
     /// SDL_mixer callback - pulls audio when needed
@@ -462,6 +547,12 @@ private:
     std::vector<int16_t> m_mixScratch;      // reused mix buffer (queue path)
     std::atomic<size_t> m_trophyCursor{0};
     std::atomic<bool> m_trophyActive{false};
+
+    // Synthesized UI beeps (focus/confirm/cancel).
+    std::vector<int16_t> m_uiPCM[3];
+    std::atomic<size_t> m_uiCursor{0};
+    std::atomic<bool> m_uiActive{false};
+    std::atomic<int> m_uiIndex{0};
 
     // Set in Init() so GBAStationCore can reach the live instance for trophy SFX.
     inline static GBAStationAudio *s_instance = nullptr;

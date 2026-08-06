@@ -200,6 +200,7 @@ private:
     void RenderSocialArea(ImDrawList *dl, ImVec2 displaySize);
     void LoadFocusTexture();
     void ReleaseFocusTexture();
+    void DrawFocusBorder(ImVec2 min, ImVec2 max, float thickness);
     ImTextureID m_focusTexture = 0;
     int m_focusTextureWidth = 0;
     int m_focusTextureHeight = 0;
