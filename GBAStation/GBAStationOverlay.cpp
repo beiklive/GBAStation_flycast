@@ -101,16 +101,24 @@ static void CycleFlycastOption(IOverlayHost *host, const char *key,
     const std::string current = host->GetCoreOption(key, *values.begin());
     int index = 0;
     int candidate = 0;
+    bool found = false;
     for (const char *value : values)
     {
         if (current == value)
         {
             index = candidate;
+            found = true;
             break;
         }
         ++candidate;
     }
     const int count = static_cast<int>(values.size());
+    // The core reports an unset option as "默认" which is not part of the
+    // selectable list.  Treat it as "before the first item" so the first
+    // Right press lands on the first real option (and Left wraps to the last),
+    // and once changed it can never fall back to the phantom "默认".
+    if (!found)
+        index = direction >= 0 ? -1 : count;
     index = (index + direction + count) % count;
     auto value = values.begin();
     std::advance(value, index);
@@ -252,10 +260,13 @@ void GBAStationOverlay::DrawFocusBorder(ImVec2 min, ImVec2 max, float thickness)
 {
     ImDrawList *fg = ImGui::GetForegroundDrawList();
     const float x = min.x, y = min.y, w = max.x - min.x, h = max.y - min.y;
+    const float rounding = 8.0f * ImGui::GetIO().FontGlobalScale;
     if (m_focusTexture)
     {
         // Animated flowing gradient: advance a UV window around the border so
-        // the highlight travels, matching the 3DS menu's FlowBorder.
+        // the highlight travels, matching the 3DS menu's FlowBorder.  The four
+        // straight edge quads get a rounded-corner cap on top so the focus
+        // frame follows the cell's rounded corners.
         const float borderWidth = std::max(4.0f, thickness * 2.0f);
         const double milliseconds = static_cast<double>(SDL_GetTicks64());
         float uv = static_cast<float>(std::fmod(milliseconds / 3600.0, 1.0));
@@ -279,10 +290,17 @@ void GBAStationOverlay::DrawFocusBorder(ImVec2 min, ImVec2 max, float thickness)
         next = uv + sideLength * advance;
         fg->AddImage(m_focusTexture, ImVec2(x - borderWidth, y), ImVec2(x, y + h),
                      ImVec2(next, 0.0f), ImVec2(uv, 1.0f));
+        // Rounded corners: the flow quads meet at square corners; paint small
+        // rounded corner patches in the focus accent to soften them.
+        const ImU32 corner = IM_COL32(79, 179, 255, 255);
+        fg->AddCircleFilled(ImVec2(x + rounding, y + rounding), rounding, corner, 16);
+        fg->AddCircleFilled(ImVec2(x + w - rounding, y + rounding), rounding, corner, 16);
+        fg->AddCircleFilled(ImVec2(x + rounding, y + h - rounding), rounding, corner, 16);
+        fg->AddCircleFilled(ImVec2(x + w - rounding, y + h - rounding), rounding, corner, 16);
     }
     else
     {
-        fg->AddRect(min, max, IM_COL32(79, 179, 255, 255), 0.0f, 0, 2.0f);
+        fg->AddRect(min, max, IM_COL32(79, 179, 255, 255), rounding, 0, 2.0f);
     }
 }
 
@@ -1142,7 +1160,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         // ImGui AddText's pos.y is the glyph top; the 3DS renderer passes a
         // baseline (y + 38 for a 58px row).  Compensate so the text is
         // vertically centered like the icon beside it.
-        const float textY = y + itemH * 0.5f - 21.0f * scale * 0.5f;
+        const float textY = y + itemH * 0.5f - 21.0f * scale * 0.43f;
         dl->AddText(font, 25.0f * scale, ImVec2(sidebarX + 34.0f * scale, y + itemH * 0.5f - 12.5f * scale),
                     selected ? white : muted, iconBuf);
         dl->AddText(font, 21.0f * scale, ImVec2(sidebarX + 64.0f * scale, textY),
@@ -1186,28 +1204,61 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
             dl->AddRect(rowMin, rowMax, rowBorder, 0.0f, 0, 1.0f * scale);
         }
         // AddText's y is the glyph top: compensate for the 3DS baseline (y+32).
-        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 24.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.5f),
+        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 24.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.43f),
                     selector ? cyan : (focused ? white : muted), iconUtf8);
-        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 46.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.5f),
+        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 46.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.43f),
                     focused ? white : muted, label.c_str());
         if (selector)
         {
             char iconL[8], iconR[8];
             EncodeUtf8(iconL, 0xE0E4);
             EncodeUtf8(iconR, 0xE0E5);
-            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 194.0f * scale, y + rowH * 0.5f - 26.0f * scale * 0.5f),
+            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 208.0f * scale, y + rowH * 0.5f - 26.0f * scale * 0.43f),
                         cyan, iconL);
-            const float valueW = font->CalcTextSizeA(18.0f * scale, FLT_MAX, 0.0f, value.c_str()).x;
-            dl->AddText(font, 18.0f * scale,
-                        ImVec2(contentX + contentW - 110.0f * scale - valueW * 0.5f, y + rowH * 0.5f - 18.0f * scale * 0.5f),
-                        cyan, value.c_str());
-            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 24.0f * scale, y + rowH * 0.5f - 26.0f * scale * 0.5f),
+            // Value with truncation + focus-scroll for long text.
+            const float valueSize = 18.0f * scale;
+            const float valueCenterX = contentX + contentW - 122.0f * scale;
+            const float valueMaxW = 86.0f * scale;
+            const float valueW = font->CalcTextSizeA(valueSize, FLT_MAX, 0.0f, value.c_str()).x;
+            if (valueW <= valueMaxW)
+            {
+                dl->AddText(font, valueSize,
+                            ImVec2(valueCenterX - valueW * 0.5f, y + rowH * 0.5f - valueSize * 0.43f),
+                            cyan, value.c_str());
+            }
+            else if (focused)
+            {
+                // Focus-scroll: slide the text through the fixed window.
+                const float scroll = std::fmod((float)(SDL_GetTicks64() % 4000) / 1000.0f, 1.0f);
+                const float travel = valueW + valueMaxW;
+                const float offset = (valueW + valueMaxW) * 0.5f - scroll * travel;
+                dl->PushClipRect(ImVec2(valueCenterX - valueMaxW * 0.5f, y),
+                                 ImVec2(valueCenterX + valueMaxW * 0.5f, y + rowH), true);
+                dl->AddText(font, valueSize, ImVec2(valueCenterX - valueW * 0.5f + offset, y + rowH * 0.5f - valueSize * 0.43f),
+                            cyan, value.c_str());
+                dl->PopClipRect();
+            }
+            else
+            {
+                // Truncate with an ellipsis when idle.
+                std::string clipped = value;
+                while (!clipped.empty() &&
+                       font->CalcTextSizeA(valueSize, FLT_MAX, 0.0f, (clipped + "…").c_str()).x > valueMaxW)
+                {
+                    clipped.pop_back();
+                }
+                clipped += "…";
+                const float cw = font->CalcTextSizeA(valueSize, FLT_MAX, 0.0f, clipped.c_str()).x;
+                dl->AddText(font, valueSize, ImVec2(valueCenterX - cw * 0.5f, y + rowH * 0.5f - valueSize * 0.43f),
+                            cyan, clipped.c_str());
+            }
+            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 38.0f * scale, y + rowH * 0.5f - 26.0f * scale * 0.43f),
                         cyan, iconR);
         }
         else
         {
             const float valueW = font->CalcTextSizeA(18.0f * scale, FLT_MAX, 0.0f, value.c_str()).x;
-            dl->AddText(font, 18.0f * scale, ImVec2(contentX + contentW - valueW - 18.0f * scale, y + rowH * 0.5f - 18.0f * scale * 0.5f),
+            dl->AddText(font, 18.0f * scale, ImVec2(contentX + contentW - valueW - 18.0f * scale, y + rowH * 0.5f - 18.0f * scale * 0.43f),
                         cyan, value.c_str());
         }
     };
@@ -1220,12 +1271,16 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         // kept centred inside [viewTop, viewBottom].
         const int total = 10;
         constexpr int kColumns = 2;
-        constexpr int kRows = 5;
         const float cellW = (contentW - 14.0f * scale) * 0.5f;
-        const float cellH = 88.0f * scale;
+        const float cellH = 112.0f * scale;
         const float cellGapX = 14.0f * scale;
-        const float cellGapY = 8.0f * scale;
+        const float cellGapY = 10.0f * scale;
         const int gridH = (total + kColumns - 1) / kColumns;
+        // Viewport is [viewTop, viewBottom]; render one row past the visible
+        // window so the selection can scroll (focus stays centred).
+        const float viewportH = viewBottom - viewTop;
+        const int visibleRows = std::max(1, (int)(viewportH / (cellH + cellGapY)));
+        const int kRows = std::min(gridH, visibleRows + 1);
         const int selectedRow = m_saveStateSlot / kColumns;
         const int firstRow = std::clamp(selectedRow - kRows / 2, 0, std::max(0, gridH - kRows));
         for (int r = 0; r < kRows; ++r)
@@ -1238,33 +1293,60 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                     continue;
                 const float x = contentX + c * (cellW + cellGapX);
                 const float y = viewTop + r * (cellH + cellGapY);
+                if (y + cellH < viewTop || y > viewBottom)
+                    continue;
                 const bool focused = inContent && slot == m_saveStateSlot;
                 const bool exists = m_host && m_host->IsGameLoaded() && m_host->StateSlotExists(slot);
                 const ImVec2 cellMin(x, y), cellMax(x + cellW, y + cellH);
-                dl->AddRectFilled(cellMin, cellMax, focused ? focusBg : rowBg, 6.0f * scale);
+                dl->AddRectFilled(cellMin, cellMax, focused ? focusBg : rowBg, 8.0f * scale);
                 if (focused)
                 {
                     DrawFocusBorder(cellMin, cellMax, 3.0f * scale);
                 }
                 else
                 {
-                    dl->AddRect(cellMin, cellMax, rowBorder, 6.0f * scale, 0, 1.0f * scale);
+                    dl->AddRect(cellMin, cellMax, rowBorder, 8.0f * scale, 0, 1.0f * scale);
                 }
+                // Snapshot placeholder on the right half (screenshots land
+                // here later, mirroring the launcher's save-state items).
+                const float snapX = x + cellW * 0.55f;
+                const float snapW = cellW * 0.45f - 10.0f * scale;
+                const float snapY = y + 8.0f * scale;
+                const float snapH = cellH - 16.0f * scale;
+                dl->AddRectFilled(ImVec2(snapX, snapY), ImVec2(snapX + snapW, snapY + snapH),
+                                  IM_COL32(255, 255, 255, focused ? 18 : 10), 6.0f * scale);
+                dl->AddRect(ImVec2(snapX, snapY), ImVec2(snapX + snapW, snapY + snapH),
+                            IM_COL32(255, 255, 255, focused ? 60 : 34), 6.0f * scale, 0, 1.0f * scale);
+                char snapIcon[8];
+                EncodeUtf8(snapIcon, 0xE413);
+                const float snapIconSize = 30.0f * scale;
+                dl->AddText(font, snapIconSize,
+                            ImVec2(snapX + snapW * 0.5f - snapIconSize * 0.5f,
+                                   snapY + snapH * 0.5f - snapIconSize * 0.43f),
+                            IM_COL32(160, 200, 230, (int)(110.0f * ease)), snapIcon);
+                // Left half: icon + title + status.
                 const float iconX = x + 14.0f * scale;
                 const float iconCenterY = y + cellH * 0.5f;
                 char icon[8];
-                EncodeUtf8(icon, exists ? 0xE161 : 0xE2C7);
-                dl->AddText(font, 34.0f * scale, ImVec2(iconX, iconCenterY - 34.0f * scale * 0.5f),
+                EncodeUtf8(icon, 0xE161);
+                dl->AddText(font, 34.0f * scale, ImVec2(iconX, iconCenterY - 34.0f * scale * 0.43f),
                             exists ? (focused ? white : cyan) : muted, icon);
                 const float textX = iconX + 44.0f * scale;
                 const std::string title = "存档槽 " + std::to_string(slot + 1);
-                dl->AddText(font, 20.0f * scale, ImVec2(textX, y + 22.0f * scale),
+                dl->AddText(font, 20.0f * scale, ImVec2(textX, y + 24.0f * scale),
                             focused ? white : muted, title.c_str());
                 const char *status = exists ? "已有存档" : "空存档槽";
-                dl->AddText(font, 16.0f * scale, ImVec2(textX, y + cellH - 36.0f * scale),
+                dl->AddText(font, 16.0f * scale, ImVec2(textX, y + cellH - 40.0f * scale),
                             exists ? cyan : muted, status);
             }
         }
+        // Scroll position hint above the footer (右下角提示文字上方).
+        const float hintY = viewBottom - 26.0f * scale;
+        const std::string scrollHint = std::to_string(selectedRow + 1) + " / " + std::to_string(gridH);
+        const ImVec2 hintSize = font->CalcTextSizeA(16.0f * scale, FLT_MAX, 0.0f, scrollHint.c_str());
+        dl->AddText(font, 16.0f * scale,
+                    ImVec2(contentX + contentW - hintSize.x, hintY),
+                    IM_COL32(184, 204, 224, (int)(160.0f * ease)), scrollHint.c_str());
     }
     else if (m_currentMenu == OverlayMenu::Settings)
     {
@@ -1296,7 +1378,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 char icon[8];
                 EncodeUtf8(icon, rowIcons[option]);
                 drawRow(row, inContent && option == m_settingsSelection, icon, labels[option], value,
-                        option == 0 || option == 1 || option == 2);
+                        true);
             }
         }
         else

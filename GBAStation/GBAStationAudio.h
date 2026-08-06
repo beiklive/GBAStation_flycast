@@ -487,6 +487,22 @@ private:
             m_uiPCM[s].clear();
             LoadUiWav(kUiFiles[s], m_uiPCM[s]);
         }
+        // Soften the harsh 3.7 kHz focus tick (the 3DS sinks it through
+        // audout's own low-pass; feeding it raw to SDL output sounds shrill).
+        if (!m_uiPCM[0].empty())
+        {
+            float l = 0.0f, r = 0.0f;
+            constexpr float kAlpha = 0.45f;
+            for (size_t i = 0; i < m_uiPCM[0].size(); i += 2)
+            {
+                l += kAlpha * (static_cast<float>(m_uiPCM[0][i]) - l);
+                r += kAlpha * (static_cast<float>(m_uiPCM[0][i + 1]) - r);
+                m_uiPCM[0][i] = static_cast<int16_t>(
+                    std::clamp(static_cast<int>(l), -32768, 32767));
+                m_uiPCM[0][i + 1] = static_cast<int16_t>(
+                    std::clamp(static_cast<int>(r), -32768, 32767));
+            }
+        }
         m_uiCursor.store(0, std::memory_order_relaxed);
         m_uiActive.store(false, std::memory_order_relaxed);
     }
