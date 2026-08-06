@@ -1096,7 +1096,6 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const ImU32 focusBorder = IM_COL32(79, 179, 255, (int)(128.0f * ease));
 
     ImFont *font = ImGui::GetFont();
-    const float fontSize = ImGui::GetFontSize();
 
     // Background: vertical gradient strips like the 3DS shell.
     for (int strip = 0; strip < 8; ++strip)
@@ -1140,7 +1139,10 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         }
         char iconBuf[8];
         EncodeUtf8(iconBuf, icons[i]);
-        const float textY = y + itemH * 0.5f + fontSize * 0.12f * scale;
+        // ImGui AddText's pos.y is the glyph top; the 3DS renderer passes a
+        // baseline (y + 38 for a 58px row).  Compensate so the text is
+        // vertically centered like the icon beside it.
+        const float textY = y + itemH * 0.66f - 21.0f * scale * 0.86f;
         dl->AddText(font, 25.0f * scale, ImVec2(sidebarX + 34.0f * scale, y + itemH * 0.5f - 12.5f * scale),
                     selected ? white : muted, iconBuf);
         dl->AddText(font, 21.0f * scale, ImVec2(sidebarX + 64.0f * scale, textY),
@@ -1157,7 +1159,6 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     // Content area
     const float contentX = 432.0f * scale;
     const float contentW = 790.0f * scale;
-    const float contentRight = contentX + contentW;
     const float viewTop = 176.0f * scale;
     const float viewBottom = 664.0f * scale;
     const float rowH = 48.0f * scale;
@@ -1184,29 +1185,29 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         {
             dl->AddRect(rowMin, rowMax, rowBorder, 0.0f, 0, 1.0f * scale);
         }
-        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 24.0f * scale, y + rowH * 0.5f - 10.0f * scale),
+        // AddText's y is the glyph top: compensate for the 3DS baseline (y+32).
+        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 24.0f * scale, y + rowH * 0.66f - 20.0f * scale * 0.86f),
                     selector ? cyan : (focused ? white : muted), iconUtf8);
-        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 46.0f * scale, y + rowH * 0.5f + 12.0f * scale),
+        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 46.0f * scale, y + rowH * 0.66f - 20.0f * scale * 0.86f),
                     focused ? white : muted, label.c_str());
         if (selector)
         {
             char iconL[8], iconR[8];
             EncodeUtf8(iconL, 0xE0E4);
             EncodeUtf8(iconR, 0xE0E5);
-            const float centerY = y + rowH * 0.5f;
-            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 194.0f * scale, centerY - 13.0f * scale),
+            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 194.0f * scale, y + rowH * 0.66f - 26.0f * scale * 0.86f),
                         cyan, iconL);
             const float valueW = font->CalcTextSizeA(18.0f * scale, FLT_MAX, 0.0f, value.c_str()).x;
             dl->AddText(font, 18.0f * scale,
-                        ImVec2(contentX + contentW - 110.0f * scale - valueW * 0.5f, centerY + 7.0f * scale),
+                        ImVec2(contentX + contentW - 110.0f * scale - valueW * 0.5f, y + rowH * 0.66f - 18.0f * scale * 0.86f),
                         cyan, value.c_str());
-            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 24.0f * scale, centerY - 13.0f * scale),
+            dl->AddText(font, 26.0f * scale, ImVec2(contentX + contentW - 24.0f * scale, y + rowH * 0.66f - 26.0f * scale * 0.86f),
                         cyan, iconR);
         }
         else
         {
             const float valueW = font->CalcTextSizeA(18.0f * scale, FLT_MAX, 0.0f, value.c_str()).x;
-            dl->AddText(font, 18.0f * scale, ImVec2(contentX + contentW - valueW - 18.0f * scale, y + rowH * 0.5f + 7.0f * scale),
+            dl->AddText(font, 18.0f * scale, ImVec2(contentX + contentW - valueW - 18.0f * scale, y + rowH * 0.66f - 18.0f * scale * 0.86f),
                         cyan, value.c_str());
         }
     };
@@ -1672,11 +1673,11 @@ void GBAStationOverlay::RenderHelpersBar(ImDrawList *dl, ImVec2 displaySize)
     char iconB[8], iconA[8];
     EncodeUtf8(iconB, 0xE0E1);
     EncodeUtf8(iconA, 0xE0E0);
-    const float baseY = displaySize.y - 42.0f * scale;
-    dl->AddText(font, 27.0f * scale, ImVec2(1020.0f * scale, baseY - 13.5f * scale), hintColor, iconB);
-    dl->AddText(font, 19.0f * scale, ImVec2(1042.0f * scale, baseY + 9.0f * scale), hintColor, bLabel);
-    dl->AddText(font, 27.0f * scale, ImVec2(1152.0f * scale, baseY - 13.5f * scale), hintColor, iconA);
-    dl->AddText(font, 19.0f * scale, ImVec2(1174.0f * scale, baseY + 9.0f * scale), hintColor, aLabel);
+const float baseY = displaySize.y - 42.0f * scale;
+dl->AddText(font, 27.0f * scale, ImVec2(1020.0f * scale, baseY - 27.0f * scale * 0.86f), hintColor, iconB);
+dl->AddText(font, 19.0f * scale, ImVec2(1042.0f * scale, baseY - 19.0f * scale * 0.86f), hintColor, bLabel);
+dl->AddText(font, 27.0f * scale, ImVec2(1152.0f * scale, baseY - 27.0f * scale * 0.86f), hintColor, iconA);
+dl->AddText(font, 19.0f * scale, ImVec2(1174.0f * scale, baseY - 19.0f * scale * 0.86f), hintColor, aLabel);
 }
 
 //==============================================================================
@@ -1713,12 +1714,13 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         return false;
 
     // Directional navigation: merge D-pad + left stick into a held bitmask,
-    // then derive edge + hold-repeat without any time API.
+    // then derive edge + hold-repeat without any time API.  The physical L / R
+    // shoulders double as Left / Right so the LR selectors work like the 3DS.
     uint64_t dirHeld = 0;
     if ((navButtons & HidNpadButton_Up) || input.leftStickY < -16000) dirHeld |= Pad_Up;
     if ((navButtons & HidNpadButton_Down) || input.leftStickY > 16000) dirHeld |= Pad_Down;
-    if ((navButtons & HidNpadButton_Left) || input.leftStickX < -16000) dirHeld |= Pad_Left;
-    if ((navButtons & HidNpadButton_Right) || input.leftStickX > 16000) dirHeld |= Pad_Right;
+    if ((navButtons & (HidNpadButton_Left | HidNpadButton_L)) || input.leftStickX < -16000) dirHeld |= Pad_Left;
+    if ((navButtons & (HidNpadButton_Right | HidNpadButton_R)) || input.leftStickX > 16000) dirHeld |= Pad_Right;
 
     uint64_t dirFire = dirHeld & ~m_navHeldPrev; // new presses fire instantly
     if (dirHeld != 0 && dirHeld == m_navHeldPrev)

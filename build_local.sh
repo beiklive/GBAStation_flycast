@@ -31,7 +31,12 @@ if [[ -n "$JOBS" && ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 if [[ -z "${SWITCH_NVK_ROOT:-}" ]]; then
-    for candidate in "$SCRIPT_DIR/../switchVK"/nvk-switch-*; do
+    # Prefer the newest SDK: the WSI present path (boot-frame direct present)
+    # requires the 26.1.4 SDK's SIGNALED throttle fences; the 25.3.6 SDK
+    # deadlocks in presentKHR on the first no-op frame.
+    for candidate in \
+        "$SCRIPT_DIR/../switchVK"/nvk-switch-26.1.4 \
+        "$SCRIPT_DIR/../switchVK"/nvk-switch-25.3.6; do
         [[ -f "$candidate/lib/libvulkan.a" ]] || continue
         SWITCH_NVK_ROOT=$candidate
         break

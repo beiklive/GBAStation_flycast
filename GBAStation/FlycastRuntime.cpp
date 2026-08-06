@@ -40,12 +40,22 @@ constexpr ImWchar kGBAStationMaterialRanges[] = {
     0,
 };
 
+// ABXY / L / R key-glyph block of the Nintendo shared font.  These codepoints
+// overlap the Material Icons private-use area, and ImGui keeps the glyph of
+// whichever font is packed first — so this range must be registered on the
+// base (shared) fonts, which are always added before the Material font.
+constexpr ImWchar kGBAStationNintendoKeyRanges[] = {
+    0xE0E0, 0xE0E5,
+    0,
+};
+
 const ImWchar *GetGBAStationMenuGlyphRanges(ImGuiIO &io) {
     static ImVector<ImWchar> ranges;
     if (!ranges.empty()) return ranges.Data;
 
     ImFontGlyphRangesBuilder builder;
     builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+    builder.AddRanges(kGBAStationNintendoKeyRanges);
     // Core option names may contain glyphs outside ImGui's common Chinese set.
     builder.AddRanges(io.Fonts->GetGlyphRangesChineseFull());
     builder.AddText(u8"返回游戏 保存状态 读取状态 金手指 画面设置 功能设置 重置游戏 退出游戏 核心设置 按键映射 "

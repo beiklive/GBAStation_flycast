@@ -376,7 +376,11 @@ public:
     }
 
     //--------------------------------------------------------------------------
-    // UI sound effects (synthesized beeps, like the 3DS frontend).
+    // UI sound effects — the real 3DS frontend samples (SeNaviFocus.wav etc.),
+    // loaded once at init and played straight into the SDL queue.  The menu
+    // pauses the core, so PushSample() never runs while it is open: mixing the
+    // beeps into PushSample would make them inaudible.  SDL_QueueAudio plays
+    // them immediately because the paused game drains the queue to silence.
     //--------------------------------------------------------------------------
     enum class UiSound
     {
@@ -388,8 +392,23 @@ public:
     void PlayUiSound(UiSound sound)
     {
         const int index = static_cast<int>(sound);
-        if (index < 0 || index > 2 || m_uiPCM[index].empty())
+        if (index < 0 || index > 2 || m_uiPCM[index].empty() || !m_initialized)
             return;
+        // The menu pauses the core, so PushSample() never runs while the menu
+        // is open.  Drop any leftover game audio and push the clip straight
+        // into the SDL queue so it plays immediately.
+        if (GBAStationConfig::USE_SDLQUEUEAUDIO && m_deviceId != 0)
+        {
+            m_uiCursor.store(0, std::memory_order_relaxed);
+            m_uiActive.store(true, std::memory_order_relaxed);
+            m_uiIndex.store(index, std::memory_order_relaxed);
+            const std::vector<int16_t> &clip = m_uiPCM[index];
+            SDL_ClearQueuedAudio(m_deviceId);
+            SDL_QueueAudio(m_deviceId, clip.data(),
+                           static_cast<Uint32>(clip.size() * sizeof(int16_t)));
+            return;
+        }
+        // Callback mode: mixed into the sample stream by MixUi().
         m_uiCursor.store(0, std::memory_order_relaxed);
         m_uiActive.store(true, std::memory_order_relaxed);
         m_uiIndex.store(index, std::memory_order_relaxed);
@@ -454,30 +473,63 @@ private:
         m_uiCursor.store(cursor, std::memory_order_relaxed);
     }
 
-    /// Synthesize short UI ticks (focus/confirm/cancel) at SAMPLE_RATE.
+    /// Load the 3DS frontend's real UI sounds (48 kHz mono WAV) and resample
+    /// them to SAMPLE_RATE stereo so SDL_QueueAudio can play them directly.
     void SynthesizeUiSounds()
     {
-        constexpr float kFreqs[3] = {1320.0f, 1760.0f, 880.0f};
-        constexpr float kDurations[3] = {0.035f, 0.055f, 0.045f};
-        constexpr float kVolumes[3] = {0.22f, 0.26f, 0.22f};
+        constexpr const char *kUiFiles[3] = {
+            "romfs:/assets/sounds/SeNaviFocus.wav",
+            "romfs:/assets/sounds/SeBtnDecide.wav",
+            "romfs:/assets/sounds/SeFooterDecideFinish.wav",
+        };
         for (int s = 0; s < 3; ++s)
         {
             m_uiPCM[s].clear();
-            const int count = static_cast<int>(kDurations[s] * static_cast<float>(SAMPLE_RATE));
-            m_uiPCM[s].reserve(static_cast<size_t>(count) * 2);
-            for (int i = 0; i < count; ++i)
-            {
-                const float t = static_cast<float>(i) / static_cast<float>(SAMPLE_RATE);
-                const float env = std::exp(-t * 55.0f);
-                const float v = std::sin(6.2831853f * kFreqs[s] * t) * kVolumes[s] * env;
-                const int16_t sample = static_cast<int16_t>(
-                    std::clamp(static_cast<int>(v * 32767.0f), -32768, 32767));
-                m_uiPCM[s].push_back(sample);
-                m_uiPCM[s].push_back(sample);
-            }
+            LoadUiWav(kUiFiles[s], m_uiPCM[s]);
         }
         m_uiCursor.store(0, std::memory_order_relaxed);
         m_uiActive.store(false, std::memory_order_relaxed);
+    }
+
+    /// WAV → SAMPLE_RATE stereo S16.  The 3DS samples are 48 kHz mono; linear
+    /// resample mirrors libnx_sink.cpp's LoadUiWav (including the 0.70 gain).
+    static void LoadUiWav(const char *path, std::vector<int16_t> &out)
+    {
+        SDL_AudioSpec spec{};
+        Uint8 *buf = nullptr;
+        Uint32 len = 0;
+        if (!SDL_LoadWAV(path, &spec, &buf, &len))
+            return;
+        if (spec.format != AUDIO_S16 || (spec.channels != 1 && spec.channels != 2) ||
+            spec.freq <= 0)
+        {
+            SDL_FreeWAV(buf);
+            return;
+        }
+
+        const int16_t *input = reinterpret_cast<const int16_t *>(buf);
+        const size_t inputFrames = len / (spec.channels * sizeof(int16_t));
+        const size_t outputFrames =
+            std::max<size_t>(1, inputFrames * static_cast<size_t>(SAMPLE_RATE) /
+                                    static_cast<size_t>(spec.freq));
+        out.resize(outputFrames * 2);
+        const double sourceStep = static_cast<double>(spec.freq) /
+                                  static_cast<double>(SAMPLE_RATE);
+        for (size_t frame = 0; frame < outputFrames; ++frame)
+        {
+            const double source = static_cast<double>(frame) * sourceStep;
+            const size_t first = std::min(static_cast<size_t>(source), inputFrames - 1);
+            const size_t second = std::min(first + 1, inputFrames - 1);
+            const float fraction = static_cast<float>(source - first);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const size_t srcCh = spec.channels == 1 ? 0 : static_cast<size_t>(ch);
+                const float a = input[first * spec.channels + srcCh];
+                const float b = input[second * spec.channels + srcCh];
+                out[frame * 2 + ch] = static_cast<int16_t>((a + (b - a) * fraction) * 0.70f);
+            }
+        }
+        SDL_FreeWAV(buf);
     }
 
     /// SDL_mixer callback - pulls audio when needed
