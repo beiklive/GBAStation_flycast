@@ -1132,7 +1132,12 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
             for (int row = 0; row < 6; ++row)
             {
                 const int option = first + row;
-                const std::string value = m_host ? m_host->GetCoreOption(keys[option], "自动") : "自动";
+                std::string value = m_host ? m_host->GetCoreOption(keys[option], "自动") : "自动";
+                // These are documented "only apply after restarting" in the
+                // core's option metadata (texture/anisotropic filtering, and
+                // threaded rendering needs a renderer restart).
+                if (option == 1 || option == 2 || option == 7)
+                    value += "（重启后生效）";
                 drawRow(row, option == m_settingsSelection, labels[option], value);
             }
         }
