@@ -10,26 +10,57 @@ GBAStationTranslationManager& GBAStationTranslationManager::Instance() {
 }
 
 bool GBAStationTranslationManager::Init() {
-    std::string language = "English"; // default
-    
-    // Attempt to read language from general.jsonc
-    const char* cfgPaths[] = {
-        "sdmc:/GBAStation/config/general.jsonc"
-    };
+    std::string language = "Chinese"; // GBAStation ships Chinese by default
 
-    for (const char* path : cfgPaths) {
+    // Prefer the launcher's UI.language (config.cfg, values zh-CN / en-US).
+    const char* uiCfgPaths[] = {
+        "sdmc:/GBAStation/config/config.cfg",
+        "/GBAStation/config/config.cfg",
+    };
+    for (const char* path : uiCfgPaths) {
         std::ifstream cfgFile(path);
         if (cfgFile.is_open()) {
-            try {
-                json cfg = json::parse(cfgFile, nullptr, true, true);
-                if (cfg.contains("language") && cfg["language"].is_string()) {
-                    language = cfg["language"].get<std::string>();
-                }
-            } catch (...) {
-                // failed to parse, leave as English
+            std::string line;
+            while (std::getline(cfgFile, line)) {
+                const size_t equals = line.find('=');
+                if (equals == std::string::npos)
+                    continue;
+                const std::string key = line.substr(0, equals);
+                if (key != "UI.language")
+                    continue;
+                std::string value = line.substr(equals + 1);
+                if (!value.empty() && value.front() == '"' && value.back() == '"' && value.size() >= 2)
+                    value = value.substr(1, value.size() - 2);
+                if (value == "en-US" || value == "en")
+                    language = "English";
+                else
+                    language = "Chinese";
             }
             cfgFile.close();
             break;
+        }
+    }
+
+    // Fall back to general.jsonc "language" for standalone launches.
+    if (language == "Chinese") {
+        const char* cfgPaths[] = {
+            "sdmc:/GBAStation/config/general.jsonc"
+        };
+
+        for (const char* path : cfgPaths) {
+            std::ifstream cfgFile(path);
+            if (cfgFile.is_open()) {
+                try {
+                    json cfg = json::parse(cfgFile, nullptr, true, true);
+                    if (cfg.contains("language") && cfg["language"].is_string()) {
+                        language = cfg["language"].get<std::string>();
+                    }
+                } catch (...) {
+                    // failed to parse, leave as default
+                }
+                cfgFile.close();
+                break;
+            }
         }
     }
 

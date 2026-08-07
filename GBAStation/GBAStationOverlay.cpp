@@ -1096,11 +1096,11 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const float height = displaySize.y;
     const ImVec2 min(0.0f, 0.0f);
     const ImVec2 max(min.x + width, min.y + height);
-    const char *tabs[] = {"返回游戏", "保存状态", "读取状态", "金手指", "画面设置", "功能设置", "重置游戏", "退出游戏"};
+    const std::string tabs[] = {tr("返回游戏"), tr("保存状态"), tr("读取状态"), tr("金手指"), tr("画面设置"), tr("功能设置"), tr("重置游戏"), tr("退出游戏")};
     const int icons[] = {0xE5C4, 0xE161, 0xE2C6, 0xE3AE, 0xE333, 0xE8B8, 0xE5D5, 0xE879};
-    const char *descriptions[] = {
-        "继续当前游戏。", "创建当前游戏的即时存档。", "从即时存档恢复游戏。", "管理当前游戏的金手指。",
-        "调整画面比例和缩放方式。", "调整可即时生效的核心选项。", "重新启动当前游戏。", "返回 GBAStation。"};
+    const std::string descriptions[] = {
+        tr("继续当前游戏。"), tr("创建当前游戏的即时存档。"), tr("从即时存档恢复游戏。"), tr("管理当前游戏的金手指。"),
+        tr("调整画面比例和缩放方式。"), tr("调整可即时生效的核心选项。"), tr("重新启动当前游戏。"), tr("返回 GBAStation。")};
 
     const int activeTab = m_quickMenuSelection;
 
@@ -1128,7 +1128,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     }
 
     // Title
-    dl->AddText(font, 26.0f * scale, ImVec2(64.0f * scale, 58.0f * scale), white, "游戏菜单");
+    dl->AddText(font, 26.0f * scale, ImVec2(64.0f * scale, 58.0f * scale), white, tr("游戏菜单").c_str());
     dl->AddRectFilled(ImVec2(56.0f * scale, 92.0f * scale),
                       ImVec2(width - 56.0f * scale, 93.0f * scale), IM_COL32(255, 255, 255, (int)(46.0f * ease)));
 
@@ -1165,7 +1165,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         dl->AddText(font, 25.0f * scale, ImVec2(sidebarX + 34.0f * scale, y + itemH * 0.5f - 12.5f * scale),
                     selected ? white : muted, iconBuf);
         dl->AddText(font, 21.0f * scale, ImVec2(sidebarX + 64.0f * scale, textY),
-                    selected ? white : muted, tabs[i]);
+                    selected ? white : muted, tabs[i].c_str());
     }
     // Reset separator
     dl->AddRectFilled(ImVec2(sidebarX + 18.0f * scale, sidebarY + 6.0f * step - 9.0f * scale),
@@ -1183,7 +1183,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const float rowH = 48.0f * scale;
     const float rowGap = 4.0f * scale;
 
-    dl->AddText(font, 27.0f * scale, ImVec2(contentX, 116.0f * scale), white, tabs[activeTab]);
+    dl->AddText(font, 27.0f * scale, ImVec2(contentX, 116.0f * scale), white, tabs[activeTab].c_str());
     dl->AddRectFilled(ImVec2(contentX, 162.0f * scale),
                       ImVec2(contentX + contentW, 163.0f * scale), IM_COL32(0, 122, 204, (int)(71.0f * ease)));
 
@@ -1324,7 +1324,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                             IM_COL32(160, 200, 230, (int)(110.0f * ease)), snapIcon);
                 // Right side: slot name + save time.
                 const float textX = snapX + snapW + 12.0f * scale;
-                const std::string title = "存档槽 " + std::to_string(slot + 1);
+                const std::string title = tr("存档槽 ") + std::to_string(slot + 1);
                 dl->AddText(font, 20.0f * scale, ImVec2(textX, y + 26.0f * scale),
                             focused ? white : muted, title.c_str());
                 if (exists)
@@ -1340,7 +1340,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 else
                 {
                     dl->AddText(font, 16.0f * scale, ImVec2(textX, y + cellH - 42.0f * scale),
-                                muted, "空存档槽");
+                                muted, tr("空存档槽").c_str());
                 }
             }
         }
@@ -1357,14 +1357,14 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         if (activeTab == 3)
         {
             const std::string enabled = m_host && m_host->GetCoreOption("reicast_widescreen_cheats", "disabled") == "enabled"
-                                            ? "开启" : "关闭";
+                                            ? tr("开启") : tr("关闭");
             char icon[8];
             EncodeUtf8(icon, 0xE3AE);
-            drawRow(0, inContent && m_settingsSelection == 0, icon, "宽屏金手指", enabled, false);
+            drawRow(0, inContent && m_settingsSelection == 0, icon, tr("宽屏金手指"), enabled, false);
         }
         else if (activeTab == 5)
         {
-            const char *labels[] = {"渲染分辨率", "纹理过滤", "各向异性过滤", "Mip 贴图", "自动跳帧", "帧跳过", "宽屏修正", "多线程渲染"};
+            const std::string labels[] = {tr("渲染分辨率"), tr("纹理过滤"), tr("各向异性过滤"), tr("Mip 贴图"), tr("自动跳帧"), tr("帧跳过"), tr("宽屏修正"), tr("多线程渲染")};
             const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "reicast_threaded_rendering"};
             const int rowIcons[] = {0xE333, 0xE3F4, 0xE3F4, 0xE873, 0xE8E5, 0xE8E5, 0xE3B6, 0xE8B8};
             const int total = 8;
@@ -1373,12 +1373,12 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
             for (int row = 0; row < visible; ++row)
             {
                 const int option = first + row;
-                std::string value = m_host ? m_host->GetCoreOption(keys[option], "自动") : "自动";
+                std::string value = m_host ? m_host->GetCoreOption(keys[option], tr("自动")) : tr("自动");
                 // These are documented "only apply after restarting" in the
                 // core's option metadata (texture/anisotropic filtering, and
                 // threaded rendering needs a renderer restart).
                 if (option == 1 || option == 2 || option == 7)
-                    value += "（重启后生效）";
+                    value += tr("（重启后生效）");
                 char icon[8];
                 EncodeUtf8(icon, rowIcons[option]);
                 drawRow(row, inContent && option == m_settingsSelection, icon, labels[option], value,
@@ -1387,18 +1387,18 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         }
         else
         {
-            const std::string mode = m_displayMode == FlycastDisplayMode::Integer ? "整数缩放" : "比例显示";
-            std::string size = "原始比例";
+            const std::string mode = m_displayMode == FlycastDisplayMode::Integer ? tr("整数缩放") : tr("比例显示");
+            std::string size = tr("原始比例");
             if (m_displayMode == FlycastDisplayMode::Integer)
-                size = m_displaySize == FlycastDisplaySize::_1x ? "1x" : m_displaySize == FlycastDisplaySize::_2x ? "2x" : "自动";
-            else if (m_displaySize == FlycastDisplaySize::Stretch) size = "拉伸";
+                size = m_displaySize == FlycastDisplaySize::_1x ? "1x" : m_displaySize == FlycastDisplaySize::_2x ? "2x" : tr("自动");
+            else if (m_displaySize == FlycastDisplaySize::Stretch) size = tr("拉伸");
             else if (m_displaySize == FlycastDisplaySize::_4_3) size = "4:3";
             else if (m_displaySize == FlycastDisplaySize::_16_9) size = "16:9";
             char icon[8];
             EncodeUtf8(icon, 0xE8F1);
-            drawRow(0, inContent && m_settingsSelection == 0, icon, "显示模式", mode, true);
+            drawRow(0, inContent && m_settingsSelection == 0, icon, tr("显示模式"), mode, true);
             EncodeUtf8(icon, 0xE3F4);
-            drawRow(1, inContent && m_settingsSelection == 1, icon, "画面比例", size, true);
+            drawRow(1, inContent && m_settingsSelection == 1, icon, tr("画面比例"), size, true);
         }
     }
     else if (m_currentMenu == OverlayMenu::DiscSelect)
@@ -1414,7 +1414,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     else
     {
         dl->AddText(font, 20.0f * scale, ImVec2(contentX, 310.0f * scale),
-                    IM_COL32(204, 230, 250, (int)(219.0f * ease)), descriptions[activeTab]);
+                    IM_COL32(204, 230, 250, (int)(219.0f * ease)), descriptions[activeTab].c_str());
     }
 }
 
@@ -1781,16 +1781,16 @@ void GBAStationOverlay::RenderHelpersBar(ImDrawList *dl, ImVec2 displaySize)
     const float easeOut = 1.0f - std::pow(1.0f - std::min(m_animTimer / 0.4f, 1.0f), 3.0f);
 
     // 3DS footer: B and A button hints pinned to the bottom right.
-    const char *bLabel = (m_sidebarFocused || m_currentMenu == OverlayMenu::QuickMenu) ? "返回" : "返回列表";
-    const char *aLabel = nullptr;
+    const std::string bLabel = (m_sidebarFocused || m_currentMenu == OverlayMenu::QuickMenu) ? tr("返回") : tr("返回列表");
+    std::string aLabel;
     if (m_currentMenu == OverlayMenu::SaveStates)
-        aLabel = m_isSaveMode ? "保存" : "读取";
+        aLabel = m_isSaveMode ? tr("保存") : tr("读取");
     else if (m_currentMenu == OverlayMenu::Settings)
-        aLabel = "调整";
+        aLabel = tr("调整");
     else if (m_currentMenu == OverlayMenu::DiscSelect)
-        aLabel = "选择";
+        aLabel = tr("选择");
     else
-        aLabel = "确定";
+        aLabel = tr("确定");
 
     ImFont *font = ImGui::GetFont();
     const ImU32 hintColor = IM_COL32(184, 204, 224, (int)(199.0f * easeOut));
@@ -1799,9 +1799,9 @@ void GBAStationOverlay::RenderHelpersBar(ImDrawList *dl, ImVec2 displaySize)
     EncodeUtf8(iconA, 0xE0E0);
 const float baseY = displaySize.y - 42.0f * scale;
 dl->AddText(font, 27.0f * scale, ImVec2(1020.0f * scale, baseY - 27.0f * scale * 0.5f), hintColor, iconB);
-dl->AddText(font, 19.0f * scale, ImVec2(1042.0f * scale, baseY - 19.0f * scale * 0.5f), hintColor, bLabel);
+dl->AddText(font, 19.0f * scale, ImVec2(1042.0f * scale, baseY - 19.0f * scale * 0.5f), hintColor, bLabel.c_str());
 dl->AddText(font, 27.0f * scale, ImVec2(1152.0f * scale, baseY - 27.0f * scale * 0.5f), hintColor, iconA);
-dl->AddText(font, 19.0f * scale, ImVec2(1174.0f * scale, baseY - 19.0f * scale * 0.5f), hintColor, aLabel);
+dl->AddText(font, 19.0f * scale, ImVec2(1174.0f * scale, baseY - 19.0f * scale * 0.5f), hintColor, aLabel.c_str());
 }
 
 //==============================================================================
