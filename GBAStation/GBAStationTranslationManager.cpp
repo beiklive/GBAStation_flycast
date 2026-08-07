@@ -36,6 +36,8 @@ bool GBAStationTranslationManager::Init() {
                     value = value.substr(2);
                 if (value == "en-US" || value == "en")
                     language = "English";
+                else if (value == "ja-JP" || value == "ja")
+                    language = "Japanese";
                 else
                     language = "Chinese";
             }
