@@ -43,11 +43,15 @@ public:
     void Shutdown() override;
 
 private:
+    friend class FlycastOverlayHost;
     bool InitAudio();
     bool InitOverlay(const std::string &romPath);
     void ShutdownOverlay();
     void RenderOverlayFrame(float deltaTime);
     void ApplyCoreInput(const FrameInput &input);
+
+    void SetFastForwardMultiplier(float multiplier);
+    void SetFastForwardToggleMode(bool toggleMode);
 
     LogCallback log_;
     std::unique_ptr<GBAStationCore> core_;
@@ -61,6 +65,9 @@ private:
     bool chainload_ = false;
     bool frameInFlight_ = false;
     bool fastForward_ = false;
+    bool fastForwardToggle_ = false;
+    bool fastForwardToggleMode_ = false;
+    float fastForwardMultiplier_ = 2.0f;
     std::string romPath_;
     std::string titleArg_;     // Display title from the launcher (argv[2])
     bool isArcade_ = false;    // NAOMI / Atomiswave (directionals -> analog axis)

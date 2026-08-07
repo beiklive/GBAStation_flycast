@@ -19,8 +19,10 @@
 #include <SDL_mixer.h>
 
 #include <algorithm>
+#include <vector>
 #include <cctype>
 #include <cstdio>
+#include <fstream>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -168,6 +170,7 @@ class FlycastOverlayHost final : public IOverlayHost, public IOverlayRAHost
 {
 public:
     explicit FlycastOverlayHost(GBAStationCore *core) : core_(core) {}
+    void SetRuntime(FlycastRuntime *runtime) { runtime_ = runtime; }
 
     std::string GetGamePath() override { return core_ ? core_->GetGamePath() : std::string(); }
     bool IsGameLoaded() override { return core_ && core_->IsGameLoaded(); }
@@ -203,6 +206,23 @@ public:
     void SetCoreOption(const std::string &key, const std::string &value) override
     {
         if (core_) core_->SetCoreOption(key, value);
+    }
+
+    float GetFastForwardMultiplier() override
+    {
+        return runtime_->fastForwardMultiplier_;
+    }
+    void SetFastForwardMultiplier(float multiplier) override
+    {
+        runtime_->SetFastForwardMultiplier(multiplier);
+    }
+    bool GetFastForwardToggleMode() override
+    {
+        return runtime_->fastForwardToggleMode_;
+    }
+    void SetFastForwardToggleMode(bool toggleMode) override
+    {
+        runtime_->SetFastForwardToggleMode(toggleMode);
     }
 
     ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) override
@@ -266,6 +286,7 @@ private:
     }
 
     GBAStationCore *core_ = nullptr;
+    FlycastRuntime *runtime_ = nullptr;
 };
 
 namespace
@@ -398,7 +419,43 @@ bool FlycastRuntime::InitAudio()
 }
 
 bool FlycastRuntime::Initialize(const LaunchInfo &)
-{
+{    // Fast forward defaults from the launcher config (same keys as 3DS/PSP).
+    {
+        const char *cfgPaths[] = {"sdmc:/GBAStation/config/config.cfg", "/GBAStation/config/config.cfg"};
+        for (const char *path : cfgPaths)
+        {
+            std::ifstream in(path);
+            if (!in)
+                continue;
+            std::string line;
+            while (std::getline(in, line))
+            {
+                const std::size_t eq = line.find('=');
+                if (eq == std::string::npos)
+                    continue;
+                const std::string key = line.substr(0, eq);
+                std::string value = line.substr(eq + 1);
+                if (value.size() > 2 && value[0] == 's' && value[1] == '|')
+                    value = value.substr(2);
+                if (key == "fastforward.multiplier")
+                {
+                    try
+                    {
+                        fastForwardMultiplier_ = std::clamp(std::stof(value), 0.5f, 5.0f);
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+                else if (key == "fastforward.mode")
+                {
+                    fastForwardToggleMode_ = (value == "toggle");
+                }
+            }
+            break;
+        }
+    }
+
     // GBAStation::Main is SDL-free (shared with the standalone target), so the
     // libretro path initializes the SDL subsystems it needs (audio + timer).
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER) != 0)
@@ -514,6 +571,7 @@ bool FlycastRuntime::InitOverlay(const std::string &romPath)
     overlay_ = std::make_unique<GBAStationOverlay>();
     LOG_INFO("OVERLAY", "creating GBAStation menu host");
     overlayHost_ = std::make_unique<FlycastOverlayHost>(core_.get());
+    overlayHost_->SetRuntime(this);
     LOG_INFO("OVERLAY", "binding GBAStation menu host");
     overlay_->SetHost(overlayHost_.get());
     // Prefer the launcher-supplied title; fall back to the rom filename.
@@ -667,7 +725,14 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
         return;
 
     const bool overlayVisible = overlay_ && overlay_->IsVisible();
-    fastForward_ = !overlayVisible && (input.buttons & Pad_FastForward) != 0;
+    const bool ffHeld = (input.buttons & Pad_FastForward) != 0;
+    const bool ffPressed = (input.pressed & Pad_FastForward) != 0;
+    if (fastForwardToggleMode_) {
+        if (ffPressed) {
+            fastForwardToggle_ = !fastForwardToggle_;
+        }
+    }
+    fastForward_ = !overlayVisible && (fastForwardToggleMode_ ? fastForwardToggle_ : ffHeld);
     if (audio_)
         audio_->SetFastForward(fastForward_);
     if (core_)
@@ -709,9 +774,16 @@ void FlycastRuntime::RunFrame()
         if (traceFrame)
             LOG_INFO("FRAME", "frame %u retro_run complete", loggedFrames);
         // The frontend owns pacing through SDL audio.  While fast-forwarding
-        // audio is deliberately dropped, so execute one extra core frame.
+        // audio is deliberately dropped, so execute extra core frames for the
+        // configured multiplier (1x => none, 2x => one extra frame, ...).
         if (fastForward_ && !(overlay_ && overlay_->IsVisible()))
-            core_->RunFrame();
+        {
+            const int extra = static_cast<int>(fastForwardMultiplier_) - 1;
+            for (int i = 0; i < extra; ++i)
+            {
+                core_->RunFrame();
+            }
+        }
     }
     if (traceFrame)
         ++loggedFrames;
@@ -784,6 +856,71 @@ void FlycastRuntime::Shutdown()
     if (!GBAStationConfig::USE_SDLQUEUEAUDIO)
         Mix_CloseAudio();
     SDL_Quit();
+}
+
+namespace
+{
+void WriteFlycastConfigValue(const char *key, const std::string &value)
+{
+    const char *paths[] = {"sdmc:/GBAStation/config/config.cfg", "/GBAStation/config/config.cfg"};
+    std::string cfgPath;
+    for (const char *path : paths)
+    {
+        std::ifstream in(path);
+        if (in.good())
+        {
+            cfgPath = path;
+            break;
+        }
+    }
+    if (cfgPath.empty())
+        return;
+
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(cfgPath);
+        std::string line;
+        while (std::getline(in, line))
+            lines.push_back(line);
+    }
+
+    const std::string keyPrefix = std::string(key) + "=";
+    const std::string encoded = "s|" + value;
+    bool replaced = false;
+    for (std::string &line : lines)
+    {
+        if (line.compare(0, keyPrefix.size(), keyPrefix) == 0)
+        {
+            line = keyPrefix + encoded;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced)
+        lines.push_back(keyPrefix + encoded);
+
+    std::ofstream out(cfgPath, std::ios::trunc);
+    if (!out)
+        return;
+    for (const std::string &line : lines)
+        out << line << "\n";
+}
+}  // namespace
+
+void FlycastRuntime::SetFastForwardMultiplier(float multiplier)
+{
+    fastForwardMultiplier_ = std::clamp(multiplier, 0.5f, 5.0f);
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", fastForwardMultiplier_);
+    WriteFlycastConfigValue("fastforward.multiplier", buf);
+}
+
+void FlycastRuntime::SetFastForwardToggleMode(bool toggleMode)
+{
+    fastForwardToggleMode_ = toggleMode;
+    if (!toggleMode)
+        fastForwardToggle_ = false;
+    WriteFlycastConfigValue("fastforward.mode", toggleMode ? "toggle" : "hold");
 }
 
 }  // namespace GBAStation

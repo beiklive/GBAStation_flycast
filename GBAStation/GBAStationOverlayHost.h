@@ -74,6 +74,12 @@ public:
     virtual std::string GetCoreOption(const std::string &, const std::string &fallback = "") { return fallback; }
     virtual void SetCoreOption(const std::string &, const std::string &) {}
 
+    // Fast forward (toggle/hold mode + multiplier).
+    virtual float GetFastForwardMultiplier() { return 2.0f; }
+    virtual void SetFastForwardMultiplier(float) {}
+    virtual bool GetFastForwardToggleMode() { return false; }
+    virtual void SetFastForwardToggleMode(bool) {}
+
     // GPU textures (RGBA8). Backend-specific implementation lives in the host.
     virtual ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) = 0;
     virtual void DestroyTexture(ImTextureID tex) = 0;

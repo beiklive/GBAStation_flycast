@@ -1364,21 +1364,35 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         }
         else if (activeTab == 5)
         {
-            const std::string labels[] = {tr("渲染分辨率"), tr("纹理过滤"), tr("各向异性过滤"), tr("Mip 贴图"), tr("自动跳帧"), tr("帧跳过"), tr("宽屏修正"), tr("多线程渲染")};
-            const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "reicast_threaded_rendering"};
-            const int rowIcons[] = {0xE333, 0xE3F4, 0xE3F4, 0xE873, 0xE8E5, 0xE8E5, 0xE3B6, 0xE8B8};
-            const int total = 8;
+            const std::string labels[] = {tr("渲染分辨率"), tr("纹理过滤"), tr("各向异性过滤"), tr("Mip 贴图"), tr("自动跳帧"), tr("帧跳过"), tr("宽屏修正"), tr("多线程渲染"), tr("快进倍率"), tr("快进模式")};
+            const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "reicast_threaded_rendering", "", ""};
+            const int rowIcons[] = {0xE333, 0xE3F4, 0xE3F4, 0xE873, 0xE8E5, 0xE8E5, 0xE3B6, 0xE8B8, 0xE8B2, 0xE8B8};
+            const int total = 10;
             const int visible = std::min(8, total);
             const int first = std::clamp(m_settingsSelection - visible / 2, 0, std::max(0, total - visible));
             for (int row = 0; row < visible; ++row)
             {
                 const int option = first + row;
-                std::string value = m_host ? m_host->GetCoreOption(keys[option], tr("自动")) : tr("自动");
-                // These are documented "only apply after restarting" in the
-                // core's option metadata (texture/anisotropic filtering, and
-                // threaded rendering needs a renderer restart).
-                if (option == 1 || option == 2 || option == 7)
-                    value += tr("（重启后生效）");
+                std::string value;
+                if (option == 8)
+                {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%dx", static_cast<int>(m_host ? m_host->GetFastForwardMultiplier() : 2.0f));
+                    value = buf;
+                }
+                else if (option == 9)
+                {
+                    value = m_host && m_host->GetFastForwardToggleMode() ? tr("切换") : tr("按住");
+                }
+                else
+                {
+                    value = m_host ? m_host->GetCoreOption(keys[option], tr("自动")) : tr("自动");
+                    // These are documented "only apply after restarting" in the
+                    // core's option metadata (texture/anisotropic filtering, and
+                    // threaded rendering needs a renderer restart).
+                    if (option == 1 || option == 2 || option == 7)
+                        value += tr("（重启后生效）");
+                }
                 char icon[8];
                 EncodeUtf8(icon, rowIcons[option]);
                 drawRow(row, inContent && option == m_settingsSelection, icon, labels[option], value,
@@ -2074,6 +2088,24 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, direction); break;
             case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, direction); break;
             case 7: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, direction); break;
+            case 8: {
+                static const float kMultipliers[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+                constexpr int kCount = 5;
+                float cur = m_host ? m_host->GetFastForwardMultiplier() : 2.0f;
+                int idx = 2;
+                for (int i = 0; i < kCount; ++i)
+                {
+                    if (cur <= kMultipliers[i] + 0.01f) { idx = i; break; }
+                }
+                idx = (idx + direction + kCount) % kCount;
+                if (m_host)
+                    m_host->SetFastForwardMultiplier(kMultipliers[idx]);
+                break;
+            }
+            case 9:
+                if (m_host)
+                    m_host->SetFastForwardToggleMode(!m_host->GetFastForwardToggleMode());
+                break;
             }
         }
         else if (m_settingsSelection == 0)
@@ -2198,6 +2230,24 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, 1); break;
                 case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, 1); break;
                 case 7: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, 1); break;
+                case 8: {
+                    static const float kMultipliers[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+                    constexpr int kCount = 5;
+                    float cur = m_host ? m_host->GetFastForwardMultiplier() : 2.0f;
+                    int idx = 2;
+                    for (int i = 0; i < kCount; ++i)
+                    {
+                        if (cur <= kMultipliers[i] + 0.01f) { idx = i; break; }
+                    }
+                    idx = (idx + 1 + kCount) % kCount;
+                    if (m_host)
+                        m_host->SetFastForwardMultiplier(kMultipliers[idx]);
+                    break;
+                }
+                case 9:
+                    if (m_host)
+                        m_host->SetFastForwardToggleMode(!m_host->GetFastForwardToggleMode());
+                    break;
                 }
             }
             // Confirm acts like Right.
