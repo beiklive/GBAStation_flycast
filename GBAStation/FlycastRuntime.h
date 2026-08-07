@@ -68,6 +68,7 @@ private:
     bool fastForwardToggle_ = false;
     bool fastForwardToggleMode_ = false;
     float fastForwardMultiplier_ = 2.0f;
+    bool showFps_ = false;
     std::string romPath_;
     std::string titleArg_;     // Display title from the launcher (argv[2])
     bool isArcade_ = false;    // NAOMI / Atomiswave (directionals -> analog axis)

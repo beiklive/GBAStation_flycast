@@ -224,6 +224,18 @@ public:
     {
         runtime_->SetFastForwardToggleMode(toggleMode);
     }
+    bool GetFastForwardActive() override
+    {
+        return runtime_->fastForward_;
+    }
+    bool GetShowFps() override
+    {
+        return runtime_->showFps_;
+    }
+    double GetCoreFps() override
+    {
+        return core_ ? core_->GetFPS() : 0.0;
+    }
 
     ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) override
     {
@@ -450,6 +462,10 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
                 else if (key == "fastforward.mode")
                 {
                     fastForwardToggleMode_ = (value == "toggle");
+                }
+                else if (key == "display.showFps")
+                {
+                    showFps_ = (value == "true" || value == "1");
                 }
             }
             break;

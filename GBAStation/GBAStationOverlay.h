@@ -102,6 +102,7 @@ private:
     void RenderGame(ImDrawList *dl, ImVec2 displaySize, unsigned int texture,
                     float aspectRatio, int width, int height,
                     int fboWidth, int fboHeight);
+    void DrawHud(ImDrawList *dl, ImVec2 displaySize);
     void RenderOverlayBackground(ImDrawList *dl, ImVec2 displaySize);
     void RenderTitleCard(ImDrawList *dl, ImVec2 displaySize);
     void RenderQuickMenu(ImDrawList *dl, ImVec2 displaySize);

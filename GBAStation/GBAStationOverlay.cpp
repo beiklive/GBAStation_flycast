@@ -666,6 +666,12 @@ void GBAStationOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, flo
     // Always render the game
     RenderGame(bgDrawList, displaySize, gameTexture, aspectRatio, frameWidth, frameHeight, fboWidth, fboHeight);
 
+    // HUD (FPS + fast forward badge) while playing; hidden with the menu open.
+    if (m_currentMenu == OverlayMenu::None)
+    {
+        DrawHud(fgDrawList, displaySize);
+    }
+
     // Render overlay if visible
     if (m_currentMenu != OverlayMenu::None)
     {
@@ -677,6 +683,50 @@ void GBAStationOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, flo
 
     // RA alerts always render (even during gameplay, not just when menu is open)
     RenderRAAlerts(fgDrawList, displaySize, ImGui::GetIO().DeltaTime);
+}
+
+void GBAStationOverlay::DrawHud(ImDrawList *dl, ImVec2 displaySize)
+{
+    if (!dl || displaySize.x <= 0.0f || displaySize.y <= 0.0f)
+        return;
+    const bool showFps = m_host && m_host->GetShowFps();
+    const bool fastForward = m_host && m_host->GetFastForwardActive();
+    if (!showFps && !fastForward)
+        return;
+
+    const float em = std::max(14.0f, std::round(displaySize.y / 32.0f));
+    const float margin = std::round(em * 0.6f);
+    const float pad = std::round(em * 0.35f);
+    const float fontScale = em / 21.0f;
+
+    std::string text;
+    if (showFps)
+    {
+        char buf[16];
+        const double fps = m_host ? m_host->GetCoreFps() : 0.0;
+        const int fpsInt = std::clamp(static_cast<int>(std::lround(fps)), 0, 999);
+        std::snprintf(buf, sizeof(buf), "FPS %d", fpsInt);
+        text = buf;
+    }
+    if (fastForward)
+    {
+        if (!text.empty())
+            text += "   ";
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "FF %dx", static_cast<int>(m_host ? m_host->GetFastForwardMultiplier() : 2.0f));
+        text += buf;
+    }
+
+    ImFont *font = ImGui::GetFont();
+    if (!font)
+        return;
+    const float baseFontSize = ImGui::GetFontSize();
+    const ImVec2 textSize = font->CalcTextSizeA(baseFontSize * fontScale, FLT_MAX, 0.0f, text.c_str());
+    const ImVec2 min(margin, margin);
+    const ImVec2 max(margin + textSize.x + pad * 2.0f, margin + textSize.y + pad * 2.0f);
+    dl->AddRectFilled(min, max, IM_COL32(0, 0, 0, 140), std::round(em * 0.25f));
+    dl->AddText(font, baseFontSize * fontScale, ImVec2(min.x + pad, min.y + pad),
+                IM_COL32(135, 255, 135, 255), text.c_str());
 }
 
 void GBAStationOverlay::RenderSocialArea(ImDrawList *dl, ImVec2 displaySize)

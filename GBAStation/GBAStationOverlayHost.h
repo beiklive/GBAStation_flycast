@@ -79,6 +79,11 @@ public:
     virtual void SetFastForwardMultiplier(float) {}
     virtual bool GetFastForwardToggleMode() { return false; }
     virtual void SetFastForwardToggleMode(bool) {}
+    virtual bool GetFastForwardActive() { return false; }
+
+    // HUD.
+    virtual bool GetShowFps() { return false; }
+    virtual double GetCoreFps() { return 0.0; }
 
     // GPU textures (RGBA8). Backend-specific implementation lives in the host.
     virtual ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) = 0;
