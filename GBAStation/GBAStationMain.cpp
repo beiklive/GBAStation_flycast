@@ -191,10 +191,8 @@ uint64_t MapButtons(u64 hid)
     if (BindingHeld("dc.handle.right", "PAD_RIGHT", hid)) b |= Pad_Right;
     if (BindingHeld("dc.handle.l", "PAD_LB", hid))     b |= Pad_L;
     if (BindingHeld("dc.handle.r", "PAD_RB", hid))     b |= Pad_R;
-    if (BindingHeld("dc.handle.l2", "PAD_LT", hid))    b |= Pad_L2;
-    if (BindingHeld("dc.handle.r2", "PAD_RT", hid))    b |= Pad_R2;
-    if (BindingHeld("dc.handle.l3", "PAD_LSB", hid))   b |= Pad_L3;
-    if (BindingHeld("dc.handle.r3", "PAD_RSB", hid))   b |= Pad_R3;
+    // The Dreamcast pad has no L2/R2/L3/R3; those bindings were copied from
+    // another core and must not be parsed.
     if (BindingHeld("dc.handle.start", "PAD_START", hid)) b |= Pad_Start;
     if (BindingHeld("dc.handle.select", "PAD_BACK", hid)) b |= Pad_Select;
 
