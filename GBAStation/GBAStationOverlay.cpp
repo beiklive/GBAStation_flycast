@@ -2008,6 +2008,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             {
                 OpenDiscBrowser();
                 m_currentMenu = OverlayMenu::DiscSelect;
+                m_sidebarFocused = false; // browser list owns the d-pad now
                 m_animTimer = 0.4f;
                 GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
             }
@@ -2067,6 +2068,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     {
         OpenDiscBrowser();
         m_currentMenu = OverlayMenu::DiscSelect;
+        m_sidebarFocused = false; // browser list owns the d-pad now
         m_animTimer = 0.4f;
         return true;
     }
@@ -2317,6 +2319,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             case 6: // Swap disc
                 OpenDiscBrowser();
                 m_currentMenu = OverlayMenu::DiscSelect;
+                m_sidebarFocused = false; // browser list owns the d-pad now
                 m_animTimer = 0.4f;
                 break;
             case 7: // Reset
