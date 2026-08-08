@@ -2377,8 +2377,9 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 if (m_isSaveMode)
                 {
                     m_host->SaveStateSlot(m_saveStateSlot);
-                    m_currentMenu = OverlayMenu::QuickMenu;
-                    m_sidebarFocused = true;
+                    Hide();
+                    m_animTimer = 0.4f;
+                    return true;
                 }
                 else
                 {
