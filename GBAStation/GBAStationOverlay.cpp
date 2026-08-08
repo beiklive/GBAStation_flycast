@@ -2088,7 +2088,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 m_discBrowserSelection--;
                 if (m_discBrowserSelection < 0)
                     m_discBrowserSelection = (int)m_discBrowserEntries.size() - 1;
-                const float rowH = 52.0f * OverlayScale();
+                const float rowH = 58.0f * OverlayScale();
                 const float contentH = 470.0f * OverlayScale();
                 m_discBrowserTargetScrollY = m_discBrowserSelection * rowH - contentH * 0.5f + rowH * 0.5f;
                 const float maxScroll = (float)m_discBrowserEntries.size() * rowH - contentH;
@@ -2123,7 +2123,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 m_discBrowserSelection++;
                 if (m_discBrowserSelection >= (int)m_discBrowserEntries.size())
                     m_discBrowserSelection = 0;
-                const float rowH = 52.0f * OverlayScale();
+                const float rowH = 58.0f * OverlayScale();
                 const float contentH = 470.0f * OverlayScale();
                 m_discBrowserTargetScrollY = m_discBrowserSelection * rowH - contentH * 0.5f + rowH * 0.5f;
                 const float maxScroll = (float)m_discBrowserEntries.size() * rowH - contentH;
@@ -2566,12 +2566,19 @@ void GBAStationOverlay::RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize)
     if (!font)
         return;
 
-    const float contentX = 268.0f * scale;
-    const float contentW = displaySize.x - contentX - 60.0f * scale;
-    const float viewTop = 150.0f * scale;
-    const float rowH = 52.0f * scale;
-    const float contentH = 470.0f * scale;
+    // Larger browser: wider, taller, starts higher, with an opaque panel.
+    const float contentX = 200.0f * scale;
+    const float contentW = displaySize.x - contentX - 40.0f * scale;
+    const float viewTop = 132.0f * scale;
+    const float rowH = 58.0f * scale;
+    const float contentH = 520.0f * scale;
     const int visible = std::min((int)(contentH / rowH), (int)m_discBrowserEntries.size());
+
+    // Opaque panel behind the whole list.
+    const ImVec2 panelMin(contentX - 20.0f * scale, viewTop - 52.0f * scale);
+    const ImVec2 panelMax(contentX + contentW + 20.0f * scale, viewTop + contentH + 16.0f * scale);
+    dl->AddRectFilled(panelMin, panelMax, IM_COL32(13, 22, 32, 242), 12.0f * scale);
+    dl->AddRect(panelMin, panelMax, IM_COL32(56, 96, 132, 180), 12.0f * scale, 0, 1.5f * scale);
 
     // Path header.
     const float ease = 1.0f;
@@ -2599,13 +2606,18 @@ void GBAStationOverlay::RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize)
         if (selected)
         {
             dl->AddRectFilled(ImVec2(contentX, y), ImVec2(contentX + contentW, y + rowH - 6.0f * scale),
-                              IM_COL32(38, 62, 92, 170), 10.0f * scale);
+                              IM_COL32(0, 96, 158, 225), 10.0f * scale);
             dl->AddRect(ImVec2(contentX, y), ImVec2(contentX + contentW, y + rowH - 6.0f * scale),
-                        IM_COL32(90, 190, 255, 200), 10.0f * scale, 0, 2.0f);
+                        IM_COL32(90, 190, 255, 220), 10.0f * scale, 0, 2.0f);
+        }
+        else
+        {
+            dl->AddRectFilled(ImVec2(contentX, y), ImVec2(contentX + contentW, y + rowH - 6.0f * scale),
+                              IM_COL32(255, 255, 255, 9), 10.0f * scale);
         }
         char icon[8];
         EncodeUtf8(icon, m_discBrowserEntries[index].isDir ? 0xE2C8 : 0xE161);
-        dl->AddText(font, 26.0f * scale, ImVec2(contentX + 12.0f * scale, y + 10.0f * scale),
+        dl->AddText(font, 26.0f * scale, ImVec2(contentX + 12.0f * scale, y + 12.0f * scale),
                     IM_COL32(130, 190, 255, 235), icon);
         dl->AddText(font, 22.0f * scale,
                     ImVec2(contentX + 52.0f * scale, y + (rowH - 22.0f * scale) * 0.5f),
