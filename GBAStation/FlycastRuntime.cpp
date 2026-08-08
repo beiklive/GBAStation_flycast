@@ -746,6 +746,10 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
         // menu renders (the menu is delayed one frame in RenderFrame).
         if (!wasVisible && overlay_->IsVisible())
             m_menuPendingThumb_ = true;
+        // The menu just closed: suppress game input for a few frames so the
+        // confirm/back button press does not bleed into the game.
+        if (wasVisible && !overlay_->IsVisible())
+            inputSuppressFrames_ = 3;
         if (overlay_->ShouldReset())
         {
             LOG_INFO("OVERLAY", "Reset requested");
@@ -785,10 +789,16 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
         else
         {
             core_->Resume();
-            if (consumed)
+            if (consumed || inputSuppressFrames_ > 0)
+            {
                 core_->ClearInputs();
+                if (inputSuppressFrames_ > 0)
+                    --inputSuppressFrames_;
+            }
             else
+            {
                 ApplyCoreInput(input);
+            }
         }
     }
 }

@@ -77,6 +77,7 @@ private:
     // Menu-open thumbnail state (captured before the menu renders).
     bool m_menuPendingThumb_ = false;
     std::vector<uint8_t> m_thumbMemory_;
+    int inputSuppressFrames_ = 0; // game input cleared for a few frames after the menu closes
     uint32_t m_thumbW_ = 0;
     uint32_t m_thumbH_ = 0;
     std::string romPath_;
