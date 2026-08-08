@@ -1412,36 +1412,75 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
             EncodeUtf8(icon, 0xE3AE);
             drawRow(0, inContent && m_settingsSelection == 0, icon, tr("宽屏金手指"), enabled, false);
         }
+        else if (activeTab == 4)
+        {
+            // 画面设置: 渲染相关 + 显示模式/比例。
+            const std::string labels[] = {tr("渲染分辨率"), tr("纹理过滤"), tr("各向异性过滤"), tr("Mip 贴图"), tr("自动跳帧"), tr("帧跳过"), tr("宽屏修正"), tr("显示模式"), tr("画面比例")};
+            const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "", ""};
+            const int rowIcons[] = {0xE333, 0xE3F4, 0xE3F4, 0xE873, 0xE8E5, 0xE8E5, 0xE3B6, 0xE8F1, 0xE3F4};
+            const int total = 9;
+            const int visible = std::min(8, total);
+            const int first = std::clamp(m_settingsSelection - visible / 2, 0, std::max(0, total - visible));
+            const std::string mode = m_displayMode == FlycastDisplayMode::Integer ? tr("整数缩放") : tr("比例显示");
+            std::string size = tr("原始比例");
+            if (m_displayMode == FlycastDisplayMode::Integer)
+                size = m_displaySize == FlycastDisplaySize::_1x ? "1x" : m_displaySize == FlycastDisplaySize::_2x ? "2x" : tr("自动");
+            else if (m_displaySize == FlycastDisplaySize::Stretch) size = tr("拉伸");
+            else if (m_displaySize == FlycastDisplaySize::_4_3) size = "4:3";
+            else if (m_displaySize == FlycastDisplaySize::_16_9) size = "16:9";
+            for (int row = 0; row < visible; ++row)
+            {
+                const int option = first + row;
+                std::string value;
+                if (option == 7)
+                {
+                    value = mode;
+                }
+                else if (option == 8)
+                {
+                    value = size;
+                }
+                else
+                {
+                    value = m_host ? m_host->GetCoreOption(keys[option], tr("自动")) : tr("自动");
+                    // These are documented "only apply after restarting" in the
+                    // core's option metadata (texture/anisotropic filtering).
+                    if (option == 1 || option == 2)
+                        value += tr("（重启后生效）");
+                }
+                char icon[8];
+                EncodeUtf8(icon, rowIcons[option]);
+                drawRow(row, inContent && option == m_settingsSelection, icon, labels[option], value,
+                        true);
+            }
+        }
         else if (activeTab == 5)
         {
-            const std::string labels[] = {tr("渲染分辨率"), tr("纹理过滤"), tr("各向异性过滤"), tr("Mip 贴图"), tr("自动跳帧"), tr("帧跳过"), tr("宽屏修正"), tr("多线程渲染"), tr("快进倍率"), tr("快进模式")};
-            const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "reicast_threaded_rendering", "", ""};
-            const int rowIcons[] = {0xE333, 0xE3F4, 0xE3F4, 0xE873, 0xE8E5, 0xE8E5, 0xE3B6, 0xE8B8, 0xE8B2, 0xE8B8};
-            const int total = 10;
+            // 功能设置: 线程/快进等非画面项目。
+            const std::string labels[] = {tr("多线程渲染"), tr("快进倍率"), tr("快进模式")};
+            const char *keys[] = {"reicast_threaded_rendering", "", ""};
+            const int rowIcons[] = {0xE8B8, 0xE8B2, 0xE8B8};
+            const int total = 3;
             const int visible = std::min(8, total);
             const int first = std::clamp(m_settingsSelection - visible / 2, 0, std::max(0, total - visible));
             for (int row = 0; row < visible; ++row)
             {
                 const int option = first + row;
                 std::string value;
-                if (option == 8)
+                if (option == 1)
                 {
                     char buf[16];
                     std::snprintf(buf, sizeof(buf), "%dx", static_cast<int>(m_host ? m_host->GetFastForwardMultiplier() : 2.0f));
                     value = buf;
                 }
-                else if (option == 9)
+                else if (option == 2)
                 {
                     value = m_host && m_host->GetFastForwardToggleMode() ? tr("切换") : tr("按住");
                 }
                 else
                 {
                     value = m_host ? m_host->GetCoreOption(keys[option], tr("自动")) : tr("自动");
-                    // These are documented "only apply after restarting" in the
-                    // core's option metadata (texture/anisotropic filtering, and
-                    // threaded rendering needs a renderer restart).
-                    if (option == 1 || option == 2 || option == 7)
-                        value += tr("（重启后生效）");
+                    value += tr("（重启后生效）");
                 }
                 char icon[8];
                 EncodeUtf8(icon, rowIcons[option]);
@@ -2047,7 +2086,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            const int settingCount = m_quickMenuSelection == 5 ? 8 : (m_quickMenuSelection == 3 ? 1 : 2);
+            const int settingCount = m_quickMenuSelection == 4 ? 9 : (m_quickMenuSelection == 5 ? 3 : (m_quickMenuSelection == 3 ? 1 : 2));
             m_settingsSelection = (m_settingsSelection + settingCount - 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
@@ -2082,7 +2121,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            const int settingCount = m_quickMenuSelection == 5 ? 8 : (m_quickMenuSelection == 3 ? 1 : 2);
+            const int settingCount = m_quickMenuSelection == 4 ? 9 : (m_quickMenuSelection == 5 ? 3 : (m_quickMenuSelection == 3 ? 1 : 2));
             m_settingsSelection = (m_settingsSelection + 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
@@ -2130,7 +2169,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         {
             CycleFlycastOption(m_host, "reicast_widescreen_cheats", {"disabled", "enabled"}, direction);
         }
-        else if (m_quickMenuSelection == 5)
+        else if (m_quickMenuSelection == 4)
         {
             switch (m_settingsSelection)
             {
@@ -2141,8 +2180,50 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, direction); break;
             case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, direction); break;
             case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, direction); break;
-            case 7: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, direction); break;
-            case 8: {
+            case 7:
+            {
+                // Display Mode: toggle Integer ↔ Display
+                if (m_displayMode == FlycastDisplayMode::Display)
+                    m_displayMode = FlycastDisplayMode::Integer;
+                else
+                    m_displayMode = FlycastDisplayMode::Display;
+                if (m_displayMode == FlycastDisplayMode::Integer)
+                    m_displaySize = FlycastDisplaySize::Auto;
+                else
+                    m_displaySize = FlycastDisplaySize::_4_3;
+                ApplyScalingSettings(true);
+                break;
+            }
+            case 8:
+            {
+                // Size: cycle through context-dependent options
+                if (m_displayMode == FlycastDisplayMode::Integer)
+                {
+                    int s = (int)m_displaySize;
+                    s += direction;
+                    if (s < 4) s = 6;
+                    if (s > 6) s = 4;
+                    m_displaySize = (FlycastDisplaySize)s;
+                }
+                else
+                {
+                    int s = (int)m_displaySize;
+                    s += direction;
+                    if (s < 0) s = 3;
+                    if (s > 3) s = 0;
+                    m_displaySize = (FlycastDisplaySize)s;
+                }
+                ApplyScalingSettings(true);
+                break;
+            }
+            }
+        }
+        else if (m_quickMenuSelection == 5)
+        {
+            switch (m_settingsSelection)
+            {
+            case 0: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, direction); break;
+            case 1: {
                 static const float kMultipliers[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
                 constexpr int kCount = 5;
                 float cur = m_host ? m_host->GetFastForwardMultiplier() : 2.0f;
@@ -2156,7 +2237,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                     m_host->SetFastForwardMultiplier(kMultipliers[idx]);
                 break;
             }
-            case 9:
+            case 2:
                 if (m_host)
                     m_host->SetFastForwardToggleMode(!m_host->GetFastForwardToggleMode());
                 break;
@@ -2277,7 +2358,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             {
                 CycleFlycastOption(m_host, "reicast_widescreen_cheats", {"disabled", "enabled"}, 1);
             }
-            else if (m_quickMenuSelection == 5)
+            else if (m_quickMenuSelection == 4)
             {
                 switch (m_settingsSelection)
                 {
@@ -2288,8 +2369,14 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, 1); break;
                 case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, 1); break;
                 case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, 1); break;
-                case 7: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, 1); break;
-                case 8: {
+                }
+            }
+            else if (m_quickMenuSelection == 5)
+            {
+                switch (m_settingsSelection)
+                {
+                case 0: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, 1); break;
+                case 1: {
                     static const float kMultipliers[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
                     constexpr int kCount = 5;
                     float cur = m_host ? m_host->GetFastForwardMultiplier() : 2.0f;
@@ -2303,7 +2390,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                         m_host->SetFastForwardMultiplier(kMultipliers[idx]);
                     break;
                 }
-                case 9:
+                case 2:
                     if (m_host)
                         m_host->SetFastForwardToggleMode(!m_host->GetFastForwardToggleMode());
                     break;
