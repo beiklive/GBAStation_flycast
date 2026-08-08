@@ -1512,4 +1512,126 @@ void SetGameViewport(int x, int y, int width, int height)
                                              static_cast<uint32_t>(height)}};
 }
 
+bool CaptureCurrentFrameRGBA(std::vector<uint8_t>& out, uint32_t& width, uint32_t& height)
+{
+    if (!s_ready || !s_device || s_swapchain == VK_NULL_HANDLE || s_swapImages.empty())
+        return false;
+
+    try
+    {
+        const uint32_t imageCount = static_cast<uint32_t>(s_swapImages.size());
+        // Wait for the most recently submitted frame so its blit is complete,
+        // then read back the image that frame presented.
+        const uint32_t prevFrame = (s_currentFrame + s_frames.size() - 1) % static_cast<uint32_t>(s_frames.size());
+        (void)s_device.waitForFences(s_frames[prevFrame].inflightFence, VK_TRUE, UINT64_MAX);
+
+        // swap images are indexed in acquire order; the previous present used
+        // s_currentImage of that frame, which we can no longer recover exactly.
+        // Read the image that was presented two acquires ago (guaranteed idle).
+        const uint32_t srcImage = (s_currentImage + imageCount - 2) % imageCount;
+        vk::Image image = s_swapImages[srcImage];
+
+        const uint32_t w = s_swapExtent.width;
+        const uint32_t h = s_swapExtent.height;
+        if (w == 0 || h == 0)
+            return false;
+
+        const vk::DeviceSize bufSize = static_cast<vk::DeviceSize>(w) * h * 4;
+
+        vk::BufferCreateInfo bci;
+        bci.size = bufSize;
+        bci.usage = vk::BufferUsageFlagBits::eTransferDst;
+        bci.sharingMode = vk::SharingMode::eExclusive;
+        vk::Buffer staging = s_device.createBuffer(bci);
+
+        vk::MemoryRequirements memReqs = s_device.getBufferMemoryRequirements(staging);
+        vk::MemoryAllocateInfo mai;
+        mai.allocationSize = memReqs.size;
+        uint32_t memTypeIndex = 0;
+        if (!FindMemoryType(memReqs.memoryTypeBits,
+                            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                            memTypeIndex))
+        {
+            s_device.destroyBuffer(staging);
+            return false;
+        }
+        mai.memoryTypeIndex = memTypeIndex;
+        vk::DeviceMemory mem = s_device.allocateMemory(mai);
+        s_device.bindBufferMemory(staging, mem, 0);
+
+        vk::CommandPoolCreateInfo cpci;
+        cpci.flags = vk::CommandPoolCreateFlagBits::eTransient;
+        cpci.queueFamilyIndex = s_queueFamilyIndex;
+        vk::CommandPool pool = s_device.createCommandPool(cpci);
+        vk::CommandBufferAllocateInfo cbai;
+        cbai.commandPool = pool;
+        cbai.level = vk::CommandBufferLevel::ePrimary;
+        cbai.commandBufferCount = 1;
+        vk::CommandBuffer cmd = s_device.allocateCommandBuffers(cbai)[0];
+
+        cmd.begin(vk::CommandBufferBeginInfo());
+        // Transition: PRESENT_SRC -> TRANSFER_SRC.
+        vk::ImageMemoryBarrier barrier;
+        barrier.image = image;
+        barrier.oldLayout = vk::ImageLayout::ePresentSrcKHR;
+        barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+        barrier.srcAccessMask = {};
+        barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eBottomOfPipe,
+                            vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, barrier);
+
+        vk::BufferImageCopy region;
+        region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        region.imageExtent = vk::Extent3D(w, h, 1);
+        cmd.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, staging, region);
+
+        // Transition back to PRESENT_SRC.
+        vk::ImageMemoryBarrier back = barrier;
+        back.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+        back.newLayout = vk::ImageLayout::ePresentSrcKHR;
+        back.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+        back.dstAccessMask = {};
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                            vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, back);
+        cmd.end();
+
+        vk::Fence fence = s_device.createFence(vk::FenceCreateInfo());
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        std::lock_guard<std::mutex> guard(s_queueMutex);
+        s_queue.submit(1, &si, fence);
+        (void)s_device.waitForFences(fence, VK_TRUE, UINT64_MAX);
+        s_device.destroyFence(fence);
+
+        out.resize(static_cast<std::size_t>(bufSize));
+        void* mapped = s_device.mapMemory(mem, 0, bufSize);
+        std::memcpy(out.data(), mapped, static_cast<std::size_t>(bufSize));
+        s_device.unmapMemory(mem);
+
+        s_device.freeCommandBuffers(pool, cmd);
+        s_device.destroyCommandPool(pool);
+        s_device.freeMemory(mem);
+        s_device.destroyBuffer(staging);
+
+        // Swapchain format is B8G8R8A8 (checked at creation); convert to RGBA8.
+        if (s_swapFormat == vk::Format::eB8G8R8A8Unorm)
+        {
+            for (std::size_t i = 0; i < out.size(); i += 4)
+                std::swap(out[i], out[i + 2]);
+        }
+        width = w;
+        height = h;
+        return true;
+    }
+    catch (const vk::SystemError& e)
+    {
+        VK_LOG_ERROR("CaptureCurrentFrameRGBA failed: %s", e.what());
+        return false;
+    }
+}
+
 }  // namespace GBAStationVulkan

@@ -12,7 +12,9 @@
 #include <libretro_vulkan.h>
 
 #include <array>
+#include <cstdint>
 #include <mutex>
+#include <vector>
 
 struct ImDrawData;
 
@@ -80,5 +82,10 @@ void BeginOverlayFrame();
 void SetOverlayDrawData(ImDrawData* drawData);
 ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, uint32_t height);
 void DestroyOverlayTexture(ImTextureID texture);
+
+// Capture the most recently presented swapchain image into RGBA8 host memory
+// (synchronous; blocks until the GPU finishes the copy). Returns false when
+// no frame has been presented yet or on transfer failure.
+bool CaptureCurrentFrameRGBA(std::vector<uint8_t>& out, uint32_t& width, uint32_t& height);
 
 }  // namespace GBAStationVulkan

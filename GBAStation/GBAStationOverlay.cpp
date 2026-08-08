@@ -1356,7 +1356,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 {
                     dl->AddRect(cellMin, cellMax, rowBorder, 8.0f * scale, 0, 1.0f * scale);
                 }
-                // Snapshot thumbnail on the left (screenshots land here later).
+                // Snapshot thumbnail on the left (saved by SaveStateSlot).
                 const float snapX = x + 8.0f * scale;
                 const float snapW = cellW * 0.40f - 8.0f * scale;
                 const float snapY = y + 8.0f * scale;
@@ -1365,13 +1365,49 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                                   IM_COL32(255, 255, 255, focused ? 18 : 10), 6.0f * scale);
                 dl->AddRect(ImVec2(snapX, snapY), ImVec2(snapX + snapW, snapY + snapH),
                             IM_COL32(255, 255, 255, focused ? 60 : 34), 6.0f * scale, 0, 1.0f * scale);
-                char snapIcon[8];
-                EncodeUtf8(snapIcon, 0xE413);
-                const float snapIconSize = 30.0f * scale;
-                dl->AddText(font, snapIconSize,
-                            ImVec2(snapX + snapW * 0.5f - snapIconSize * 0.5f,
-                                   snapY + snapH * 0.5f - snapIconSize * 0.43f),
-                            IM_COL32(160, 200, 230, (int)(110.0f * ease)), snapIcon);
+                ImTextureID thumbTex = 0;
+                if (m_host && exists)
+                {
+                    // Load / refresh the thumbnail when the state file changed.
+                    const std::string thumbPath = m_host->StateThumbPath(slot);
+                    struct stat tst {};
+                    if (!thumbPath.empty() && stat(thumbPath.c_str(), &tst) == 0)
+                    {
+                        SlotThumb &thumb = m_slotThumbs[slot];
+                        if (thumb.tex == 0 || thumb.mtime != tst.st_mtime)
+                        {
+                            if (thumb.tex)
+                            {
+                                m_host->DestroyThumbTexture(thumb.tex);
+                                thumb.tex = 0;
+                            }
+                            int tw = 0, th = 0, ch = 0;
+                            unsigned char *pixels = stbi_load(thumbPath.c_str(), &tw, &th, &ch, 4);
+                            if (pixels && tw > 0 && th > 0)
+                            {
+                                thumb.tex = m_host->CreateThumbTexture(pixels, tw, th);
+                                thumb.mtime = tst.st_mtime;
+                            }
+                            if (pixels)
+                                stbi_image_free(pixels);
+                        }
+                        thumbTex = thumb.tex;
+                    }
+                }
+                if (thumbTex)
+                {
+                    dl->AddImage(thumbTex, ImVec2(snapX, snapY), ImVec2(snapX + snapW, snapY + snapH));
+                }
+                else
+                {
+                    char snapIcon[8];
+                    EncodeUtf8(snapIcon, 0xE413);
+                    const float snapIconSize = 30.0f * scale;
+                    dl->AddText(font, snapIconSize,
+                                ImVec2(snapX + snapW * 0.5f - snapIconSize * 0.5f,
+                                       snapY + snapH * 0.5f - snapIconSize * 0.43f),
+                                IM_COL32(160, 200, 230, (int)(110.0f * ease)), snapIcon);
+                }
                 // Right side: slot name + save time.
                 const float textX = snapX + snapW + 12.0f * scale;
                 const std::string title = tr("存档槽 ") + std::to_string(slot + 1);
@@ -2042,8 +2078,10 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         // Left adjusts the focused setting or moves between save-slot columns;
         // it never returns to the sidebar (B does).  Without this the LR
         // selectors could not be changed — the first Left would pop the focus
-        // back to the tabs.
-        if (m_currentMenu != OverlayMenu::Settings && m_currentMenu != OverlayMenu::SaveStates)
+        // back to the tabs.  The disc browser owns its own list navigation and
+        // must not lose focus to the sidebar on Left/Right.
+        if (m_currentMenu != OverlayMenu::Settings && m_currentMenu != OverlayMenu::SaveStates &&
+            m_currentMenu != OverlayMenu::DiscSelect)
         {
             m_sidebarFocused = true;
             return true;

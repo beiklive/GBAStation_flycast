@@ -134,6 +134,12 @@ private:
     int m_quickMenuSelection = 0;
     bool m_sidebarFocused = true;
     int m_saveStateSlot = 0;
+    // Cached state-slot thumbnails (texture + state file mtime).
+    struct SlotThumb {
+        ImTextureID tex = 0;
+        time_t mtime = 0;
+    };
+    std::array<SlotThumb, 10> m_slotThumbs;
     bool m_isSaveMode = true;
     int m_settingsSelection = 0;
     FlycastDisplayMode m_displayMode = FlycastDisplayMode::Display;

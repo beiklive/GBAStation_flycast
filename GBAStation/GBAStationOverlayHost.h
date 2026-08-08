@@ -69,6 +69,10 @@ public:
     virtual void LoadStateSlot(int slot) = 0;
     virtual void SwapDisc(const std::string &path) = 0;
     virtual void UpdateGamePath(const std::string &path) {}
+    /// PNG thumbnail path next to the state file (empty when unsupported).
+    virtual std::string StateThumbPath(int slot) { return {}; }
+    virtual ImTextureID CreateThumbTexture(const unsigned char *rgba, int width, int height) { return 0; }
+    virtual void DestroyThumbTexture(ImTextureID tex) {}
 
     // Live libretro options. Implementations that do not expose options retain
     // the fallback values and leave the menu rows read-only.
