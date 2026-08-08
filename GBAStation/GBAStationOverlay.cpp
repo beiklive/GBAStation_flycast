@@ -628,7 +628,7 @@ void GBAStationOverlay::Hide()
 
 void GBAStationOverlay::ActivateTab(int tab)
 {
-    m_quickMenuSelection = std::clamp(tab, 0, 7);
+    m_quickMenuSelection = std::clamp(tab, 0, 8);
     m_settingsSelection = 0;
     m_sidebarFocused = true;
 
@@ -1146,11 +1146,11 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const float height = displaySize.y;
     const ImVec2 min(0.0f, 0.0f);
     const ImVec2 max(min.x + width, min.y + height);
-    const std::string tabs[] = {tr("返回游戏"), tr("保存状态"), tr("读取状态"), tr("金手指"), tr("画面设置"), tr("功能设置"), tr("重置游戏"), tr("退出游戏")};
-    const int icons[] = {0xE5C4, 0xE161, 0xE2C6, 0xE3AE, 0xE333, 0xE8B8, 0xE5D5, 0xE879};
+    const std::string tabs[] = {tr("返回游戏"), tr("保存状态"), tr("读取状态"), tr("金手指"), tr("画面设置"), tr("功能设置"), tr("换碟"), tr("重置游戏"), tr("退出游戏")};
+    const int icons[] = {0xE5C4, 0xE161, 0xE2C6, 0xE3AE, 0xE333, 0xE8B8, 0xE161, 0xE5D5, 0xE879};
     const std::string descriptions[] = {
         tr("继续当前游戏。"), tr("创建当前游戏的即时存档。"), tr("从即时存档恢复游戏。"), tr("管理当前游戏的金手指。"),
-        tr("调整画面比例和缩放方式。"), tr("调整可即时生效的核心选项。"), tr("重新启动当前游戏。"), tr("返回 GBAStation。")};
+        tr("调整画面比例和缩放方式。"), tr("调整可即时生效的核心选项。"), tr("更换游戏碟片，可浏览任意目录选择新的镜像文件。"), tr("重新启动当前游戏。"), tr("返回 GBAStation。")};
 
     const int activeTab = m_quickMenuSelection;
 
@@ -1188,7 +1188,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     const float sidebarW = 336.0f * scale;
     const float itemH = 58.0f * scale;
     const float step = 64.0f * scale;
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < 9; ++i)
     {
         const float y = sidebarY + i * step;
         const bool selected = i == activeTab;
@@ -1217,13 +1217,13 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         dl->AddText(font, 21.0f * scale, ImVec2(sidebarX + 64.0f * scale, textY),
                     selected ? white : muted, tabs[i].c_str());
     }
-    // Reset separator
-    dl->AddRectFilled(ImVec2(sidebarX + 18.0f * scale, sidebarY + 6.0f * step - 9.0f * scale),
-                      ImVec2(sidebarX + sidebarW - 18.0f * scale, sidebarY + 6.0f * step - 8.0f * scale),
+    // Reset separator (between the disc-swap item and Reset).
+    dl->AddRectFilled(ImVec2(sidebarX + 18.0f * scale, sidebarY + 7.0f * step - 9.0f * scale),
+                      ImVec2(sidebarX + sidebarW - 18.0f * scale, sidebarY + 7.0f * step - 8.0f * scale),
                       IM_COL32(255, 255, 255, (int)(36.0f * ease)));
     // Divider
     dl->AddRectFilled(ImVec2(404.0f * scale, 110.0f * scale),
-                      ImVec2(405.0f * scale, 610.0f * scale), IM_COL32(255, 255, 255, (int)(20.0f * ease)));
+                      ImVec2(405.0f * scale, 700.0f * scale), IM_COL32(255, 255, 255, (int)(20.0f * ease)));
 
     // Content area
     const float contentX = 432.0f * scale;
@@ -1486,6 +1486,7 @@ void GBAStationOverlay::RenderQuickMenu(ImDrawList *dl, ImVec2 displaySize)
         tr("emulator_cheats"),
         tr("emulator_video_settings"),
         tr("emulator_core_settings"),
+        tr("emulator_swap_disc"),
         tr("emulator_reset"),
         tr("emulator_exit_game")};
     const std::string descriptions[] = {
@@ -1495,9 +1496,10 @@ void GBAStationOverlay::RenderQuickMenu(ImDrawList *dl, ImVec2 displaySize)
         "Manage game cheat settings.",
         "Configure display scaling and aspect ratio.",
         "Configure Flycast core options.",
+        "Swap the current disc for another image.",
         "Restart the current game.",
         "Return to GBAStation."};
-    constexpr int numItems = 8;
+    constexpr int numItems = 9;
 
     float t = m_animTimer / 0.4f;
     if (t > 1.0f)
@@ -1943,12 +1945,12 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     {
         if (upPressed)
         {
-            ActivateTab((m_quickMenuSelection + 7) % 8);
+            ActivateTab((m_quickMenuSelection + 8) % 9);
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
         if (downPressed)
         {
-            ActivateTab((m_quickMenuSelection + 1) % 8);
+            ActivateTab((m_quickMenuSelection + 1) % 9);
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
         if (rightPressed && (m_currentMenu == OverlayMenu::SaveStates || m_currentMenu == OverlayMenu::Settings))
@@ -1965,13 +1967,21 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             }
             else if (m_quickMenuSelection == 6)
             {
-                m_shouldReset = true;
-                Hide();
+                OpenDiscBrowser();
+                m_currentMenu = OverlayMenu::DiscSelect;
+                m_animTimer = 0.4f;
                 GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
             }
             else if (m_quickMenuSelection == 7)
             {
+                m_shouldReset = true;
+                Hide();
+                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
+            }
+            else if (m_quickMenuSelection == 8)
+            {
                 m_shouldExit = true;
+                Hide();
                 GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
             }
             else if (m_currentMenu == OverlayMenu::SaveStates || m_currentMenu == OverlayMenu::Settings)
@@ -2027,7 +2037,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     {
         if (m_currentMenu == OverlayMenu::QuickMenu)
         {
-            m_quickMenuSelection = (m_quickMenuSelection + 7) % 8;
+            m_quickMenuSelection = (m_quickMenuSelection + 8) % 9;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
         else if (m_currentMenu == OverlayMenu::SaveStates)
@@ -2062,7 +2072,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     {
         if (m_currentMenu == OverlayMenu::QuickMenu)
         {
-            m_quickMenuSelection = (m_quickMenuSelection + 1) % 8;
+            m_quickMenuSelection = (m_quickMenuSelection + 1) % 9;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
         else if (m_currentMenu == OverlayMenu::SaveStates)
@@ -2223,11 +2233,16 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 m_settingsSelection = 0;
                 m_animTimer = 0.4f;
                 break;
-            case 6: // Reset
+            case 6: // Swap disc
+                OpenDiscBrowser();
+                m_currentMenu = OverlayMenu::DiscSelect;
+                m_animTimer = 0.4f;
+                break;
+            case 7: // Reset
                 m_shouldReset = true;
                 Hide();
                 return true;
-            case 7: // Exit
+            case 8: // Exit
                 m_shouldExit = true;
                 break;
             }
