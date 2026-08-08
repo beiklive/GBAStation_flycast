@@ -622,7 +622,8 @@ void GBAStationOverlay::Hide()
     // HandleInput() returns immediately while hidden, so any navigation key
     // released after save/load would otherwise remain latched forever.
     m_navHeldPrev = 0;
-    m_navRepeatFrames = 0;
+    m_navFireAtMs = 0;
+    m_navStartMs = 0;
 }
 
 void GBAStationOverlay::ActivateTab(int tab)
@@ -1911,17 +1912,24 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     if ((navButtons & (HidNpadButton_Right | HidNpadButton_R)) || input.leftStickX > 16000) dirHeld |= Pad_Right;
 
     uint64_t dirFire = dirHeld & ~m_navHeldPrev; // new presses fire instantly
-    if (dirHeld != 0 && dirHeld == m_navHeldPrev)
+    if (dirFire != 0)
     {
-        if (--m_navRepeatFrames <= 0)
+        m_navStartMs = SDL_GetTicks();
+        m_navFireAtMs = m_navStartMs + NAV_INITIAL_DELAY_MS;
+    }
+    else if (dirHeld != 0 && dirHeld == m_navHeldPrev && m_navFireAtMs != 0)
+    {
+        const uint64_t nowMs = SDL_GetTicks();
+        if (nowMs >= m_navFireAtMs)
         {
             dirFire |= dirHeld;
-            m_navRepeatFrames = NAV_REPEAT_FRAMES;
+            // Accelerate while held: 128 ms -> 48 ms over ~1 second.
+            const uint64_t heldMs = nowMs - m_navStartMs;
+            uint64_t interval = NAV_START_REPEAT_MS - heldMs * 12 / 100;
+            if (interval < NAV_MIN_REPEAT_MS)
+                interval = NAV_MIN_REPEAT_MS;
+            m_navFireAtMs = nowMs + interval;
         }
-    }
-    else if (dirFire != 0)
-    {
-        m_navRepeatFrames = NAV_INITIAL_DELAY_FRAMES;
     }
     m_navHeldPrev = dirHeld;
 

@@ -155,12 +155,14 @@ private:
     int m_triangleWidth = 0;
     int m_triangleHeight = 0;
 
-    // Directional nav repeat (frame-based; replaces SDL time debounce).
-    // Discrete buttons use FrameInput edge bits and need no repeat state.
-    uint64_t m_navHeldPrev = 0;
-    int m_navRepeatFrames = 0;
-    static constexpr int NAV_INITIAL_DELAY_FRAMES = 14;
-    static constexpr int NAV_REPEAT_FRAMES = 6;
+// Directional nav repeat (3DS-style time-based: first repeat waits 280 ms,
+// then repeats speed up 128 ms -> 48 ms while held).
+uint64_t m_navHeldPrev = 0;
+uint64_t m_navFireAtMs = 0;
+uint64_t m_navStartMs = 0;
+static constexpr uint64_t NAV_INITIAL_DELAY_MS = 280;
+static constexpr uint64_t NAV_MIN_REPEAT_MS = 48;
+static constexpr uint64_t NAV_START_REPEAT_MS = 128;
 
     // Start+Select opens the overlay only; it never closes it (Back closes), so
     // no combo-edge/flicker state is needed.
