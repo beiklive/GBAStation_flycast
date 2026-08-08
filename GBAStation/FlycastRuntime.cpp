@@ -191,8 +191,10 @@ public:
     void SaveStateSlot(int slot) override
     {
         if (core_) core_->SaveState(StatePath(slot));
-        // Snapshot the current game frame next to the state file (thumbnail).
-        CaptureStateThumbnail(StatePath(slot));
+        // Close the menu and snapshot the pure gameplay frame two frames later
+        // (the presented image right after the menu disappears).
+        if (runtime_)
+            runtime_->RequestStateThumbnail(StatePath(slot));
     }
     void LoadStateSlot(int slot) override
     {
@@ -283,70 +285,6 @@ public:
     }
 
 private:
-    // Save a PNG thumbnail of the current game frame next to the state file.
-    void CaptureStateThumbnail(const std::string &statePath)
-    {
-        std::vector<uint8_t> rgba;
-        uint32_t w = 0, h = 0;
-        if (!GBAStationVulkan::CaptureCurrentFrameRGBA(rgba, w, h) || w == 0 || h == 0)
-        {
-            LOG_WARN("CORE", "State thumbnail capture failed for %s", statePath.c_str());
-            return;
-        }
-        LOG_INFO("CORE", "State thumbnail captured %ux%u for %s", w, h, statePath.c_str());
-
-        std::vector<uint8_t> raw;
-        raw.reserve(static_cast<std::size_t>(w) * (h + 1) * 3 / 2);
-        for (uint32_t y = 0; y < h; ++y)
-        {
-            raw.push_back(0); // filter: None
-            raw.insert(raw.end(), rgba.begin() + static_cast<std::ptrdiff_t>(y) * w * 4,
-                       rgba.begin() + static_cast<std::ptrdiff_t>(y + 1) * w * 4);
-        }
-
-        uLongf compressedSize = compressBound(static_cast<uLong>(raw.size()));
-        std::vector<uint8_t> compressed(compressedSize);
-        if (compress2(compressed.data(), &compressedSize, raw.data(), static_cast<uLong>(raw.size()),
-                      Z_BEST_SPEED) != Z_OK)
-            return;
-        compressed.resize(compressedSize);
-
-        FILE *fp = fopen((statePath + ".png").c_str(), "wb");
-        if (!fp)
-            return;
-        auto writeU32 = [&](uint32_t v) {
-            const uint8_t b[4] = {static_cast<uint8_t>(v >> 24), static_cast<uint8_t>(v >> 16),
-                                  static_cast<uint8_t>(v >> 8), static_cast<uint8_t>(v)};
-            fwrite(b, 1, 4, fp);
-        };
-        auto writeChunk = [&](const char tag[4], const uint8_t *data, uint32_t len) {
-            writeU32(len);
-            fwrite(tag, 1, 4, fp);
-            fwrite(data, 1, len, fp);
-            uint32_t crc = crc32(0, reinterpret_cast<const uint8_t *>(tag), 4);
-            if (len)
-                crc = crc32(crc, data, len);
-            writeU32(crc);
-        };
-
-        const uint8_t signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
-        fwrite(signature, 1, 8, fp);
-
-        uint8_t ihdr[13];
-        ihdr[0] = static_cast<uint8_t>(w >> 24); ihdr[1] = static_cast<uint8_t>(w >> 16);
-        ihdr[2] = static_cast<uint8_t>(w >> 8);  ihdr[3] = static_cast<uint8_t>(w);
-        ihdr[4] = static_cast<uint8_t>(h >> 24); ihdr[5] = static_cast<uint8_t>(h >> 16);
-        ihdr[6] = static_cast<uint8_t>(h >> 8);  ihdr[7] = static_cast<uint8_t>(h);
-        ihdr[8] = 8;  // bit depth
-        ihdr[9] = 6;  // RGBA
-        ihdr[10] = 0; // compression
-        ihdr[11] = 0; // filter
-        ihdr[12] = 0; // interlace
-        writeChunk("IHDR", ihdr, sizeof(ihdr));
-        writeChunk("IDAT", compressed.data(), static_cast<uint32_t>(compressed.size()));
-        writeChunk("IEND", nullptr, 0);
-        fclose(fp);
-    }
 
     std::string StatePath(int slot) const
     {
@@ -938,6 +876,89 @@ void FlycastRuntime::RenderFrame()
         ++loggedRenderFrames;
     }
     frameInFlight_ = false;
+
+    // State thumbnail capture: wait two frames after the menu was closed so
+    // the presented image is pure gameplay (no menu composited).
+    if (!m_stateThumbPending_.empty())
+    {
+        if (--m_stateThumbDelay_ <= 0)
+        {
+            CaptureStateThumbnail(m_stateThumbPending_);
+            m_stateThumbPending_.clear();
+        }
+    }
+}
+
+void FlycastRuntime::RequestStateThumbnail(const std::string &statePath)
+{
+    m_stateThumbPending_ = statePath;
+    m_stateThumbDelay_ = 2; // capture after two pure-gameplay frames
+    if (overlay_)
+        overlay_->Hide();
+}
+
+void FlycastRuntime::CaptureStateThumbnail(const std::string &statePath)
+{
+    std::vector<uint8_t> rgba;
+    uint32_t w = 0, h = 0;
+    if (!GBAStationVulkan::CaptureCurrentFrameRGBA(rgba, w, h) || w == 0 || h == 0)
+    {
+        LOG_WARN("CORE", "State thumbnail capture failed for %s", statePath.c_str());
+        return;
+    }
+    LOG_INFO("CORE", "State thumbnail captured %ux%u for %s", w, h, statePath.c_str());
+
+    std::vector<uint8_t> raw;
+    raw.reserve(static_cast<std::size_t>(w) * (h + 1) * 3 / 2);
+    for (uint32_t y = 0; y < h; ++y)
+    {
+        raw.push_back(0); // filter: None
+        raw.insert(raw.end(), rgba.begin() + static_cast<std::ptrdiff_t>(y) * w * 4,
+                   rgba.begin() + static_cast<std::ptrdiff_t>(y + 1) * w * 4);
+    }
+
+    uLongf compressedSize = compressBound(static_cast<uLong>(raw.size()));
+    std::vector<uint8_t> compressed(compressedSize);
+    if (compress2(compressed.data(), &compressedSize, raw.data(), static_cast<uLong>(raw.size()),
+                  Z_BEST_SPEED) != Z_OK)
+        return;
+    compressed.resize(compressedSize);
+
+    FILE *fp = fopen((statePath + ".png").c_str(), "wb");
+    if (!fp)
+        return;
+    auto writeU32 = [&](uint32_t v) {
+        const uint8_t b[4] = {static_cast<uint8_t>(v >> 24), static_cast<uint8_t>(v >> 16),
+                              static_cast<uint8_t>(v >> 8), static_cast<uint8_t>(v)};
+        fwrite(b, 1, 4, fp);
+    };
+    auto writeChunk = [&](const char tag[4], const uint8_t *data, uint32_t len) {
+        writeU32(len);
+        fwrite(tag, 1, 4, fp);
+        fwrite(data, 1, len, fp);
+        uint32_t crc = crc32(0, reinterpret_cast<const uint8_t *>(tag), 4);
+        if (len)
+            crc = crc32(crc, data, len);
+        writeU32(crc);
+    };
+
+    const uint8_t signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    fwrite(signature, 1, 8, fp);
+
+    uint8_t ihdr[13];
+    ihdr[0] = static_cast<uint8_t>(w >> 24); ihdr[1] = static_cast<uint8_t>(w >> 16);
+    ihdr[2] = static_cast<uint8_t>(w >> 8);  ihdr[3] = static_cast<uint8_t>(w);
+    ihdr[4] = static_cast<uint8_t>(h >> 24); ihdr[5] = static_cast<uint8_t>(h >> 16);
+    ihdr[6] = static_cast<uint8_t>(h >> 8);  ihdr[7] = static_cast<uint8_t>(h);
+    ihdr[8] = 8;  // bit depth
+    ihdr[9] = 6;  // RGBA
+    ihdr[10] = 0; // compression
+    ihdr[11] = 0; // filter
+    ihdr[12] = 0; // interlace
+    writeChunk("IHDR", ihdr, sizeof(ihdr));
+    writeChunk("IDAT", compressed.data(), static_cast<uint32_t>(compressed.size()));
+    writeChunk("IEND", nullptr, 0);
+    fclose(fp);
 }
 
 void FlycastRuntime::Shutdown()

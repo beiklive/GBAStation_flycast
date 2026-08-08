@@ -52,6 +52,9 @@ private:
 
     void SetFastForwardMultiplier(float multiplier);
     void SetFastForwardToggleMode(bool toggleMode);
+    // Close the menu and capture the pure gameplay frame as a state thumbnail.
+    void RequestStateThumbnail(const std::string &statePath);
+    void CaptureStateThumbnail(const std::string &statePath);
 
     LogCallback log_;
     std::unique_ptr<GBAStationCore> core_;
@@ -69,6 +72,8 @@ private:
     bool fastForwardToggleMode_ = false;
     float fastForwardMultiplier_ = 2.0f;
     bool showFps_ = false;
+    std::string m_stateThumbPending_;
+    int m_stateThumbDelay_ = 0;
     std::string romPath_;
     std::string titleArg_;     // Display title from the launcher (argv[2])
     bool isArcade_ = false;    // NAOMI / Atomiswave (directionals -> analog axis)
