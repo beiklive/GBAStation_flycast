@@ -77,6 +77,10 @@ public:
     /// @brief Get current game path
     std::string GetGamePath() const { return m_gamePath; }
 
+    /// @brief Update the tracked game path after a disc swap (save states,
+    /// screenshots and RetroAchievements hashing follow the new disc).
+    void SetGamePath(const std::string &path) { m_gamePath = path; }
+
     // Runtime core options are supplied to libretro again on the next frame.
     std::string GetCoreOption(const std::string &key, const std::string &fallback = "") const;
     void SetCoreOption(const std::string &key, const std::string &value);

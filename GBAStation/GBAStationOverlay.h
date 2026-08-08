@@ -113,6 +113,9 @@ private:
     void RenderStatusBar(ImDrawList *dl, ImVec2 displaySize);
     void RenderDiscMenu(ImDrawList *dl, ImVec2 displaySize);
     void ScanForDiscs();
+    void OpenDiscBrowser();
+    void RefreshDiscBrowser();
+    void RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize);
     void RenderRAAlerts(ImDrawList *dl, ImVec2 displaySize, float deltaTime);
     void ActivateTab(int tab);
     void EnsureRAIconLoaded();
@@ -144,6 +147,18 @@ private:
         std::string romPath;
     };
     std::vector<DiscEntry> m_discs;
+
+    // Disc browser (manual disc swap file picker).
+    struct DiscBrowserEntry {
+        std::string name;
+        std::string path;
+        bool isDir = false;
+    };
+    std::string m_discBrowserDir;
+    std::vector<DiscBrowserEntry> m_discBrowserEntries;
+    int m_discBrowserSelection = 0;
+    float m_discBrowserScrollY = 0.0f;
+    float m_discBrowserTargetScrollY = 0.0f;
 
     // Settings persistence
     void LoadCoreSettings();

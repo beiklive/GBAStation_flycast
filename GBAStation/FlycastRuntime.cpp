@@ -199,6 +199,10 @@ public:
     {
         if (core_) core_->SwapDiskByPath(path);
     }
+    void UpdateGamePath(const std::string &path) override
+    {
+        if (core_) core_->SetGamePath(path);
+    }
     std::string GetCoreOption(const std::string &key, const std::string &fallback = "") override
     {
         return core_ ? core_->GetCoreOption(key, fallback) : fallback;
@@ -612,15 +616,10 @@ void FlycastRuntime::RenderOverlayFrame(float deltaTime)
     if (!overlayReady_ || !overlay_)
         return;
 
-    // Flycast owns the core command buffers for the game frame.  Do not run
-    // ImGui's Vulkan backend while the menu is closed: aside from doing
-    // needless work this mixes a second render pass into the first boot frame.
-    if (!overlay_->IsVisible())
-    {
-        GBAStationVulkan::SetOverlayDrawData(nullptr);
-        return;
-    }
-
+    // Flycast owns the core command buffers for the game frame.  While the
+    // menu is closed we still run the overlay frame so the HUD (FPS / fast
+    // forward badge) can draw; RenderGame skips itself when the game texture
+    // is 0, so no game render pass is mixed in.
     uint32_t width = 0, height = 0;
     GBAStationVulkan::GetSwapExtent(width, height);
 

@@ -1467,13 +1467,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     }
     else if (m_currentMenu == OverlayMenu::DiscSelect)
     {
-        const int visible = std::min(6, static_cast<int>(m_discs.size()));
-        for (int i = 0; i < visible; ++i)
-        {
-            char icon[8];
-            EncodeUtf8(icon, 0xE161);
-            drawRow(i, inContent && i == m_discSelection, icon, m_discs[i].displayName, "", false);
-        }
+        RenderDiscBrowser(dl, displaySize);
     }
     else
     {
@@ -2019,16 +2013,11 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         return true;
     }
 
-    // X button for disc select
-    if (xPressed && m_currentMenu == OverlayMenu::QuickMenu && !m_discs.empty())
+    // X button for disc swap browser (always available).
+    if (xPressed && m_currentMenu == OverlayMenu::QuickMenu)
     {
+        OpenDiscBrowser();
         m_currentMenu = OverlayMenu::DiscSelect;
-        m_discSelection = 0;
-        m_discScrollY = 0.0f;
-        m_discTargetScrollY = 0.0f;
-        // Submenu transition: keep the slide-in complete so the persistent
-        // chrome (social area, status bar, controls) doesn't re-animate; only
-        // the initial open from gameplay animates. Matches the other cores.
         m_animTimer = 0.4f;
         return true;
     }
@@ -2052,20 +2041,19 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             m_settingsSelection = (m_settingsSelection + settingCount - 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
-        else if (m_currentMenu == OverlayMenu::DiscSelect && !m_discs.empty())
+        else if (m_currentMenu == OverlayMenu::DiscSelect)
         {
-            m_discSelection--;
-            if (m_discSelection < 0) m_discSelection = (int)m_discs.size() - 1;
-            // Scroll
-            float itemHeight = 64.0f * OverlayScale();
-            int maxVisible = 4;
-            float contentHeight = maxVisible * itemHeight;
-            float maxScroll = (float)m_discs.size() * itemHeight - contentHeight;
-            if (maxScroll < 0) maxScroll = 0;
-            m_discTargetScrollY = m_discSelection * itemHeight - contentHeight / 2 + itemHeight / 2;
-            if (m_discTargetScrollY < 0) m_discTargetScrollY = 0;
-            if (m_discTargetScrollY > maxScroll) m_discTargetScrollY = maxScroll;
-            m_discScrollY = m_discTargetScrollY;
+            if (!m_discBrowserEntries.empty())
+            {
+                m_discBrowserSelection--;
+                if (m_discBrowserSelection < 0)
+                    m_discBrowserSelection = (int)m_discBrowserEntries.size() - 1;
+                const float rowH = 52.0f * OverlayScale();
+                const float contentH = 470.0f * OverlayScale();
+                m_discBrowserTargetScrollY = m_discBrowserSelection * rowH - contentH * 0.5f + rowH * 0.5f;
+                const float maxScroll = (float)m_discBrowserEntries.size() * rowH - contentH;
+                m_discBrowserTargetScrollY = maxScroll > 0.0f ? std::clamp(m_discBrowserTargetScrollY, 0.0f, maxScroll) : 0.0f;
+            }
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
     }
@@ -2088,20 +2076,19 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             m_settingsSelection = (m_settingsSelection + 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
-        else if (m_currentMenu == OverlayMenu::DiscSelect && !m_discs.empty())
+        else if (m_currentMenu == OverlayMenu::DiscSelect)
         {
-            m_discSelection++;
-            if (m_discSelection >= (int)m_discs.size()) m_discSelection = 0;
-            // Scroll
-            float itemHeight = 64.0f * OverlayScale();
-            int maxVisible = 4;
-            float contentHeight = maxVisible * itemHeight;
-            float maxScroll = (float)m_discs.size() * itemHeight - contentHeight;
-            if (maxScroll < 0) maxScroll = 0;
-            m_discTargetScrollY = m_discSelection * itemHeight - contentHeight / 2 + itemHeight / 2;
-            if (m_discTargetScrollY < 0) m_discTargetScrollY = 0;
-            if (m_discTargetScrollY > maxScroll) m_discTargetScrollY = maxScroll;
-            m_discScrollY = m_discTargetScrollY;
+            if (!m_discBrowserEntries.empty())
+            {
+                m_discBrowserSelection++;
+                if (m_discBrowserSelection >= (int)m_discBrowserEntries.size())
+                    m_discBrowserSelection = 0;
+                const float rowH = 52.0f * OverlayScale();
+                const float contentH = 470.0f * OverlayScale();
+                m_discBrowserTargetScrollY = m_discBrowserSelection * rowH - contentH * 0.5f + rowH * 0.5f;
+                const float maxScroll = (float)m_discBrowserEntries.size() * rowH - contentH;
+                m_discBrowserTargetScrollY = maxScroll > 0.0f ? std::clamp(m_discBrowserTargetScrollY, 0.0f, maxScroll) : 0.0f;
+            }
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
     }
@@ -2339,12 +2326,21 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::DiscSelect)
         {
-            // Swap disc
-            if (m_host && !m_discs.empty())
+            if (m_host && !m_discBrowserEntries.empty())
             {
-                m_host->SwapDisc(m_discs[m_discSelection].romPath);
-                Hide();
-                m_animTimer = 0.4f;
+                const DiscBrowserEntry &entry = m_discBrowserEntries[m_discBrowserSelection];
+                if (entry.isDir)
+                {
+                    m_discBrowserDir = entry.path;
+                    RefreshDiscBrowser();
+                }
+                else
+                {
+                    m_host->SwapDisc(entry.path);
+                    m_host->UpdateGamePath(entry.path);
+                    Hide();
+                    m_animTimer = 0.4f;
+                }
                 return true;
             }
         }
@@ -2352,7 +2348,25 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     // Back
     if (backPressed)
     {
-        m_sidebarFocused = true;
+        if (m_currentMenu == OverlayMenu::DiscSelect)
+        {
+            // Browse up one directory, or back to the quick menu at the root.
+            const size_t slash = m_discBrowserDir.find_last_of("/\\");
+            if (slash != std::string::npos && slash > 0)
+            {
+                m_discBrowserDir = m_discBrowserDir.substr(0, slash);
+                RefreshDiscBrowser();
+            }
+            else
+            {
+                m_currentMenu = OverlayMenu::QuickMenu;
+                m_sidebarFocused = true;
+            }
+        }
+        else
+        {
+            m_sidebarFocused = true;
+        }
         GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
     }
 
@@ -2372,6 +2386,138 @@ static std::string NormalizeDiscPath(const std::string &path)
             c = '/';
     }
     return result;
+}
+
+//==============================================================================
+// Disc Browser (manual disc swap file picker)
+//==============================================================================
+
+static bool IsDiscFile(const std::string &path)
+{
+    const std::string ext = path.size() >= 4 ? path.substr(path.size() - 4) : std::string();
+    std::string lower = ext;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower == ".chd" || lower == ".cue" || lower == ".gdi" ||
+           lower == ".cdi" || lower == ".iso" || lower == ".m3u";
+}
+
+void GBAStationOverlay::OpenDiscBrowser()
+{
+    m_discBrowserDir.clear();
+    if (m_host)
+    {
+        std::string current = m_host->GetGamePath();
+        if (current.size() >= 2 && current.front() == '"' && current.back() == '"')
+            current = current.substr(1, current.size() - 2);
+        current = NormalizeDiscPath(current);
+        const size_t slash = current.find_last_of("/\\");
+        if (slash != std::string::npos)
+            m_discBrowserDir = current.substr(0, slash);
+    }
+    if (m_discBrowserDir.empty())
+        m_discBrowserDir = "sdmc:/GBAStation/roms";
+    RefreshDiscBrowser();
+}
+
+void GBAStationOverlay::RefreshDiscBrowser()
+{
+    m_discBrowserEntries.clear();
+    m_discBrowserSelection = 0;
+    m_discBrowserScrollY = 0.0f;
+    m_discBrowserTargetScrollY = 0.0f;
+
+    DIR *dir = opendir(m_discBrowserDir.c_str());
+    if (!dir)
+        return;
+
+    std::vector<DiscBrowserEntry> dirs;
+    std::vector<DiscBrowserEntry> files;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL)
+    {
+        const std::string name = ent->d_name;
+        if (name == "." || name == "..")
+            continue;
+        const std::string full = m_discBrowserDir + "/" + name;
+        struct stat st;
+        const bool isDir = stat(full.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        DiscBrowserEntry entry;
+        entry.name = name;
+        entry.path = full;
+        entry.isDir = isDir;
+        if (isDir)
+            dirs.push_back(entry);
+        else if (IsDiscFile(full))
+            files.push_back(entry);
+    }
+    closedir(dir);
+
+    std::sort(dirs.begin(), dirs.end(), [](const DiscBrowserEntry &a, const DiscBrowserEntry &b) {
+        return a.name < b.name;
+    });
+    std::sort(files.begin(), files.end(), [](const DiscBrowserEntry &a, const DiscBrowserEntry &b) {
+        return a.name < b.name;
+    });
+
+    for (const auto &e : dirs)
+        m_discBrowserEntries.push_back(e);
+    for (const auto &e : files)
+        m_discBrowserEntries.push_back(e);
+}
+
+void GBAStationOverlay::RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize)
+{
+    const float scale = OverlayScale();
+    ImFont *font = ImGui::GetFont();
+    if (!font)
+        return;
+
+    const float contentX = 268.0f * scale;
+    const float contentW = displaySize.x - contentX - 60.0f * scale;
+    const float viewTop = 150.0f * scale;
+    const float rowH = 52.0f * scale;
+    const float contentH = 470.0f * scale;
+    const int visible = std::min((int)(contentH / rowH), (int)m_discBrowserEntries.size());
+
+    // Path header.
+    const float ease = 1.0f;
+    dl->AddText(font, 21.0f * scale, ImVec2(contentX, viewTop - 40.0f * scale),
+                IM_COL32(184, 204, 224, 219), m_discBrowserDir.c_str());
+
+    // Smooth scroll.
+    m_discBrowserScrollY += (m_discBrowserTargetScrollY - m_discBrowserScrollY) * 0.25f;
+    int first = 0;
+    if (!m_discBrowserEntries.empty())
+    {
+        const float maxScroll = (float)m_discBrowserEntries.size() * rowH - contentH;
+        if (maxScroll > 0.0f)
+            first = (int)(m_discBrowserScrollY / rowH);
+        first = std::clamp(first, 0, (int)m_discBrowserEntries.size() - visible);
+    }
+
+    for (int row = 0; row < visible; ++row)
+    {
+        const int index = first + row;
+        if (index < 0 || index >= (int)m_discBrowserEntries.size())
+            break;
+        const bool selected = index == m_discBrowserSelection;
+        const float y = viewTop + row * rowH;
+        if (selected)
+        {
+            dl->AddRectFilled(ImVec2(contentX, y), ImVec2(contentX + contentW, y + rowH - 6.0f * scale),
+                              IM_COL32(38, 62, 92, 170), 10.0f * scale);
+            dl->AddRect(ImVec2(contentX, y), ImVec2(contentX + contentW, y + rowH - 6.0f * scale),
+                        IM_COL32(90, 190, 255, 200), 10.0f * scale, 0, 2.0f);
+        }
+        char icon[8];
+        EncodeUtf8(icon, m_discBrowserEntries[index].isDir ? 0xE2C8 : 0xE161);
+        dl->AddText(font, 26.0f * scale, ImVec2(contentX + 12.0f * scale, y + 10.0f * scale),
+                    IM_COL32(130, 190, 255, 235), icon);
+        dl->AddText(font, 22.0f * scale,
+                    ImVec2(contentX + 52.0f * scale, y + (rowH - 22.0f * scale) * 0.5f),
+                    selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(204, 224, 244, 225),
+                    m_discBrowserEntries[index].name.c_str());
+    }
 }
 
 static int GetDiscExtensionPriority(const std::string &ext)

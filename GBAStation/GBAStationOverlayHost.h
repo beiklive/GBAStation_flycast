@@ -68,6 +68,7 @@ public:
     virtual void SaveStateSlot(int slot) = 0;
     virtual void LoadStateSlot(int slot) = 0;
     virtual void SwapDisc(const std::string &path) = 0;
+    virtual void UpdateGamePath(const std::string &path) {}
 
     // Live libretro options. Implementations that do not expose options retain
     // the fallback values and leave the menu rows read-only.
