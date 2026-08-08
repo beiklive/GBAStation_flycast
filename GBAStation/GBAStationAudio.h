@@ -391,6 +391,7 @@ public:
 
     void PlayUiSound(UiSound sound)
     {
+        return; // UI sounds disabled
         const int index = static_cast<int>(sound);
         if (index < 0 || index > 2 || m_uiPCM[index].empty() || !m_initialized)
             return;
