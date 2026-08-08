@@ -191,10 +191,10 @@ public:
     void SaveStateSlot(int slot) override
     {
         if (core_) core_->SaveState(StatePath(slot));
-        // Close the menu and snapshot the pure gameplay frame two frames later
-        // (the presented image right after the menu disappears).
+        // Write the menu-open thumbnail (captured into memory before the menu
+        // rendered) next to the state file.
         if (runtime_)
-            runtime_->RequestStateThumbnail(StatePath(slot));
+            runtime_->WriteStateThumbnailFromMemory(StatePath(slot));
     }
     void LoadStateSlot(int slot) override
     {
@@ -740,7 +740,12 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
     bool consumed = false;
     if (overlay_)
     {
+        const bool wasVisible = overlay_->IsVisible();
         consumed = overlay_->HandleInput(input);
+        // The menu was just opened: capture the pure gameplay frame before the
+        // menu renders (the menu is delayed one frame in RenderFrame).
+        if (!wasVisible && overlay_->IsVisible())
+            m_menuPendingThumb_ = true;
         if (overlay_->ShouldReset())
         {
             LOG_INFO("OVERLAY", "Reset requested");
@@ -839,7 +844,10 @@ void FlycastRuntime::RenderFrame()
     const bool traceRender = loggedRenderFrames < 3;
     if (traceRender)
         LOG_INFO("FRAME", "render %u overlay begin", loggedRenderFrames);
-    RenderOverlayFrame(deltaTime);
+    // The frame the menu was just opened: skip the overlay render so the
+    // captured backbuffer stays pure gameplay; the menu shows next frame.
+    if (!m_menuPendingThumb_)
+        RenderOverlayFrame(deltaTime);
     if (traceRender)
         LOG_INFO("FRAME", "render %u overlay complete", loggedRenderFrames);
 
@@ -877,44 +885,48 @@ void FlycastRuntime::RenderFrame()
     }
     frameInFlight_ = false;
 
-    // State thumbnail capture: wait two frames after the menu was closed so
-    // the presented image is pure gameplay (no menu composited).
-    if (!m_stateThumbPending_.empty())
+    // Menu-open thumbnail: after the pure-gameplay frame was presented, copy
+    // it into memory for the state thumbnail.
+    if (m_menuPendingThumb_)
     {
-        if (--m_stateThumbDelay_ <= 0)
-        {
-            CaptureStateThumbnail(m_stateThumbPending_);
-            m_stateThumbPending_.clear();
-        }
+        CaptureMenuThumbnailToMemory();
+        m_menuPendingThumb_ = false;
     }
 }
 
-void FlycastRuntime::RequestStateThumbnail(const std::string &statePath)
-{
-    m_stateThumbPending_ = statePath;
-    m_stateThumbDelay_ = 2; // capture after two pure-gameplay frames
-    if (overlay_)
-        overlay_->Hide();
-}
-
-void FlycastRuntime::CaptureStateThumbnail(const std::string &statePath)
+void FlycastRuntime::CaptureMenuThumbnailToMemory()
 {
     std::vector<uint8_t> rgba;
     uint32_t w = 0, h = 0;
     if (!GBAStationVulkan::CaptureCurrentFrameRGBA(rgba, w, h) || w == 0 || h == 0)
     {
-        LOG_WARN("CORE", "State thumbnail capture failed for %s", statePath.c_str());
+        LOG_WARN("CORE", "Menu thumbnail capture failed");
         return;
     }
-    LOG_INFO("CORE", "State thumbnail captured %ux%u for %s", w, h, statePath.c_str());
+    m_thumbMemory_ = std::move(rgba);
+    m_thumbW_ = w;
+    m_thumbH_ = h;
+    LOG_INFO("CORE", "Menu thumbnail captured %ux%u", w, h);
+}
+
+void FlycastRuntime::WriteStateThumbnailFromMemory(const std::string &statePath)
+{
+    if (m_thumbMemory_.empty() || m_thumbW_ == 0 || m_thumbH_ == 0)
+    {
+        LOG_WARN("CORE", "State thumbnail: no captured frame in memory for %s", statePath.c_str());
+        return;
+    }
+    const uint32_t w = m_thumbW_;
+    const uint32_t h = m_thumbH_;
+    LOG_INFO("CORE", "State thumbnail written %ux%u for %s", w, h, statePath.c_str());
 
     std::vector<uint8_t> raw;
     raw.reserve(static_cast<std::size_t>(w) * (h + 1) * 3 / 2);
     for (uint32_t y = 0; y < h; ++y)
     {
         raw.push_back(0); // filter: None
-        raw.insert(raw.end(), rgba.begin() + static_cast<std::ptrdiff_t>(y) * w * 4,
-                   rgba.begin() + static_cast<std::ptrdiff_t>(y + 1) * w * 4);
+        raw.insert(raw.end(), m_thumbMemory_.begin() + static_cast<std::ptrdiff_t>(y) * w * 4,
+                   m_thumbMemory_.begin() + static_cast<std::ptrdiff_t>(y + 1) * w * 4);
     }
 
     uLongf compressedSize = compressBound(static_cast<uLong>(raw.size()));

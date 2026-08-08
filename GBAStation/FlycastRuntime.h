@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 class GBAStationCore;
 class GBAStationOverlay;
@@ -52,9 +53,10 @@ private:
 
     void SetFastForwardMultiplier(float multiplier);
     void SetFastForwardToggleMode(bool toggleMode);
-    // Close the menu and capture the pure gameplay frame as a state thumbnail.
-    void RequestStateThumbnail(const std::string &statePath);
-    void CaptureStateThumbnail(const std::string &statePath);
+    // Menu-open thumbnail: capture the pure gameplay frame into memory when
+    // the menu is opened; write it next to the state file on save.
+    void CaptureMenuThumbnailToMemory();
+    void WriteStateThumbnailFromMemory(const std::string &statePath);
 
     LogCallback log_;
     std::unique_ptr<GBAStationCore> core_;
@@ -72,8 +74,11 @@ private:
     bool fastForwardToggleMode_ = false;
     float fastForwardMultiplier_ = 2.0f;
     bool showFps_ = false;
-    std::string m_stateThumbPending_;
-    int m_stateThumbDelay_ = 0;
+    // Menu-open thumbnail state (captured before the menu renders).
+    bool m_menuPendingThumb_ = false;
+    std::vector<uint8_t> m_thumbMemory_;
+    uint32_t m_thumbW_ = 0;
+    uint32_t m_thumbH_ = 0;
     std::string romPath_;
     std::string titleArg_;     // Display title from the launcher (argv[2])
     bool isArcade_ = false;    // NAOMI / Atomiswave (directionals -> analog axis)
