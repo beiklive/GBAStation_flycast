@@ -289,7 +289,11 @@ private:
         std::vector<uint8_t> rgba;
         uint32_t w = 0, h = 0;
         if (!GBAStationVulkan::CaptureCurrentFrameRGBA(rgba, w, h) || w == 0 || h == 0)
+        {
+            LOG_WARN("CORE", "State thumbnail capture failed for %s", statePath.c_str());
             return;
+        }
+        LOG_INFO("CORE", "State thumbnail captured %ux%u for %s", w, h, statePath.c_str());
 
         std::vector<uint8_t> raw;
         raw.reserve(static_cast<std::size_t>(w) * (h + 1) * 3 / 2);

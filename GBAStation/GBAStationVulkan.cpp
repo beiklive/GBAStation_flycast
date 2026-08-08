@@ -117,6 +117,7 @@ struct PerFrame
     vk::Fence inflightFence;        // signalled when GPU finishes this frame
     vk::Semaphore acquireSemaphore; // signalled by vkAcquireNextImage
     vk::Semaphore renderSemaphore;  // signalled by our submit, waited by present
+    uint32_t presentedImage = 0;    // swap image index presented by this frame
 
     // Set by core via set_image() each frame. Pointer ownership stays with
     // the core; we read it from EndFrame.
@@ -1182,6 +1183,7 @@ void EndFrame()
     // not the rotating frame slot).
     vk::PresentInfoKHR present;
     present.waitSemaphoreCount = 1;
+    f.presentedImage = s_currentImage;
     present.pWaitSemaphores = &f.renderSemaphore;
     present.swapchainCount = 1;
     present.pSwapchains = &s_swapchain;
@@ -1528,7 +1530,7 @@ bool CaptureCurrentFrameRGBA(std::vector<uint8_t>& out, uint32_t& width, uint32_
         // swap images are indexed in acquire order; the previous present used
         // s_currentImage of that frame, which we can no longer recover exactly.
         // Read the image that was presented two acquires ago (guaranteed idle).
-        const uint32_t srcImage = (s_currentImage + imageCount - 2) % imageCount;
+        const uint32_t srcImage = s_frames[prevFrame].presentedImage;
         vk::Image image = s_swapImages[srcImage];
 
         const uint32_t w = s_swapExtent.width;

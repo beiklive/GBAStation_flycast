@@ -1182,6 +1182,18 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     dl->AddRectFilled(ImVec2(56.0f * scale, 92.0f * scale),
                       ImVec2(width - 56.0f * scale, 93.0f * scale), IM_COL32(255, 255, 255, (int)(46.0f * ease)));
 
+    // Disc swap browser is a full-screen list view: the menu sidebar and the
+    // content area are both hidden, so the d-pad can only control the list.
+    if (m_currentMenu == OverlayMenu::DiscSelect)
+    {
+        dl->AddText(font, 27.0f * scale, ImVec2(64.0f * scale, 108.0f * scale), white,
+                    tr("更换游戏碟片").c_str());
+        dl->AddRectFilled(ImVec2(56.0f * scale, 148.0f * scale),
+                          ImVec2(width - 56.0f * scale, 149.0f * scale), IM_COL32(0, 122, 204, (int)(71.0f * ease)));
+        RenderDiscBrowser(dl, displaySize);
+        return;
+    }
+
     // Sidebar
     const float sidebarX = 48.0f * scale;
     const float sidebarY = 116.0f * scale;
