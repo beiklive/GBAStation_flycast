@@ -1975,7 +1975,6 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     // Confirm = B, Back = A, disc select = Y (edge-triggered).
     bool confirmPressed = (navPressed & HidNpadButton_A) != 0;
     bool backPressed = (navPressed & HidNpadButton_B) != 0;
-    bool xPressed = (navPressed & HidNpadButton_X) != 0;
 
     // The sidebar owns navigation until Right explicitly enters the active
     // page. Switching a tab is immediate: the right panel changes before any
@@ -2060,16 +2059,6 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     {
         m_shouldReset = true;
         Hide();
-        return true;
-    }
-
-    // X button for disc swap browser (always available).
-    if (xPressed && m_currentMenu == OverlayMenu::QuickMenu)
-    {
-        OpenDiscBrowser();
-        m_currentMenu = OverlayMenu::DiscSelect;
-        m_sidebarFocused = false; // browser list owns the d-pad now
-        m_animTimer = 0.4f;
         return true;
     }
 
