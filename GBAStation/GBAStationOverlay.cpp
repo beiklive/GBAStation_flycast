@@ -703,10 +703,9 @@ void GBAStationOverlay::DrawHud(ImDrawList *dl, ImVec2 displaySize)
     std::string text;
     if (showFps)
     {
-        char buf[16];
+        char buf[24];
         const double fps = m_host ? m_host->GetCoreFps() : 0.0;
-        const int fpsInt = std::clamp(static_cast<int>(std::lround(fps)), 0, 999);
-        std::snprintf(buf, sizeof(buf), "FPS %d", fpsInt);
+        std::snprintf(buf, sizeof(buf), "FPS: %.1f", fps);
         text = buf;
     }
     if (fastForward)
@@ -714,7 +713,7 @@ void GBAStationOverlay::DrawHud(ImDrawList *dl, ImVec2 displaySize)
         if (!text.empty())
             text += "   ";
         char buf[16];
-        std::snprintf(buf, sizeof(buf), "FF %dx", static_cast<int>(m_host ? m_host->GetFastForwardMultiplier() : 2.0f));
+        std::snprintf(buf, sizeof(buf), "%dx>>", static_cast<int>(m_host ? m_host->GetFastForwardMultiplier() : 2.0f));
         text += buf;
     }
 
