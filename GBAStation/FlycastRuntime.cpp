@@ -793,7 +793,13 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
             {
                 core_->ClearInputs();
                 if (inputSuppressFrames_ > 0)
+                {
                     --inputSuppressFrames_;
+                    // Renew while the confirm/back button is still held so the
+                    // release does not bleed into the game.
+                    if (input.buttons & (Pad_A | Pad_B))
+                        inputSuppressFrames_ = 3;
+                }
             }
             else
             {

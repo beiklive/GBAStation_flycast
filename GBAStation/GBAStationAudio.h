@@ -394,6 +394,12 @@ public:
         const int index = static_cast<int>(sound);
         if (index < 0 || index > 2 || m_uiPCM[index].empty() || !m_initialized)
             return;
+        // Debounce: a single button press may reach this code twice through
+        // overlapping menu paths; skip a replay within 100 ms of the last one.
+        const uint64_t nowTicks = SDL_GetTicks();
+        if (m_uiLastPlayTicks != 0 && nowTicks - m_uiLastPlayTicks < 250)
+            return;
+        m_uiLastPlayTicks = nowTicks;
         // The menu pauses the core, so PushSample() never runs while the menu
         // is open.  Drop any leftover game audio and push the clip straight
         // into the SDL queue so it plays immediately.
@@ -621,6 +627,7 @@ private:
     std::atomic<size_t> m_uiCursor{0};
     std::atomic<bool> m_uiActive{false};
     std::atomic<int> m_uiIndex{0};
+    uint64_t m_uiLastPlayTicks = 0; // PlayUiSound debounce
 
     // Set in Init() so GBAStationCore can reach the live instance for trophy SFX.
     inline static GBAStationAudio *s_instance = nullptr;
