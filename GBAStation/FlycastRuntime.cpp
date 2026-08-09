@@ -10,6 +10,7 @@
 #include "GBAStationCore.h"
 #include "GBAStationLogger.h"
 #include "GBAStationOverlay.h"
+#include "json.hpp"
 #include "GBAStationVulkan.h"
 
 #include "imgui.h"
@@ -19,6 +20,7 @@
 #include <SDL_mixer.h>
 
 #include <algorithm>
+#include <ctime>
 #include <vector>
 #include <zlib.h>
 #include <cctype>
@@ -165,6 +167,62 @@ void ApplyGBAStationMenuStyle() {
 
 } // namespace
 
+
+namespace
+{
+
+/// State file path for a slot (shared by the overlay host and the runtime).
+std::string FlycastStatePath(GBAStationCore *core, int slot, const std::string &savePath)
+{
+    const std::string romPath = core ? core->GetGamePath() : std::string();
+
+    // Game name = basename without extension.
+    std::string name = romPath;
+    size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos)
+        name = name.substr(slash + 1);
+    size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos)
+        name = name.substr(0, dot);
+
+    // Save dir comes from the launcher GameDB (savePath field); fall back to
+    // the same default layout the launcher would have generated otherwise.
+    std::string saveDir = savePath;
+    if (saveDir.empty())
+        saveDir = std::string(GBAStation::Paths::StatesRoot) + "/" + name;
+
+    struct stat st;
+    if (stat(saveDir.c_str(), &st) == -1)
+        mkdir(saveDir.c_str(), 0777);
+
+    return saveDir + "/" + name + ".ss" + std::to_string(slot);
+}
+
+std::string NormalizeFlycastRomPath(std::string path)
+{
+    for (char &ch : path)
+    {
+        if (ch == '\\')
+            ch = '/';
+    }
+    if (path.rfind("sdmc:", 0) == 0)
+        path.erase(0, 5);
+    while (path.size() > 1 && path[0] == '/' && path[1] == '/')
+        path.erase(0, 1);
+    return path;
+}
+
+std::string CurrentFlycastTimestamp()
+{
+    std::time_t now = std::time(nullptr);
+    std::tm local{};
+    localtime_r(&now, &local);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%y-%m-%d %H-%M-%S", &local);
+    return buf;
+}
+
+}  // namespace
 // Adapts the libretro GBAStationCore + GBAStationVulkan renderer to the overlay's
 // backend-agnostic IOverlayHost / IOverlayRAHost interfaces.
 class FlycastOverlayHost final : public IOverlayHost, public IOverlayRAHost
@@ -288,37 +346,7 @@ private:
 
     std::string StatePath(int slot) const
     {
-        const std::string romPath = core_ ? core_->GetGamePath() : std::string();
-
-        // Game name = basename without extension.
-        std::string name = romPath;
-        size_t slash = name.find_last_of("/\\");
-        if (slash != std::string::npos)
-            name = name.substr(slash + 1);
-        size_t dot = name.find_last_of('.');
-        if (dot != std::string::npos)
-            name = name.substr(0, dot);
-
-        // System = the rom's parent dir (roms/<system>/<game>) -> states/<system>/.
-        std::string system = "dc";
-        if (slash != std::string::npos)
-        {
-            std::string dir = romPath.substr(0, slash);
-            size_t slash2 = dir.find_last_of("/\\");
-            if (slash2 != std::string::npos && slash2 + 1 < dir.size())
-                system = dir.substr(slash2 + 1);
-        }
-
-        const std::string stateDir =
-            std::string(GBAStation::Paths::StatesRoot) + "/" + system + "/";
-
-        struct stat st;
-        if (stat(GBAStation::Paths::StatesRoot, &st) == -1)
-            mkdir(GBAStation::Paths::StatesRoot, 0777);
-        if (stat(stateDir.c_str(), &st) == -1)
-            mkdir(stateDir.c_str(), 0777);
-
-        return stateDir + name + ".state" + std::to_string(slot);
+        return FlycastStatePath(core_, slot, runtime_ ? runtime_->savePath_ : std::string());
     }
 
     GBAStationCore *core_ = nullptr;
@@ -491,6 +519,26 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
                 {
                     showFps_ = (value == "true" || value == "1");
                 }
+                else if (key == "save.autoLoadState0")
+                {
+                    try
+                    {
+                        autoLoadStateSlot_ = std::clamp(std::stoi(value), 0, 10);
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+                else if (key == "save.autoSaveOnExit")
+                {
+                    try
+                    {
+                        autoSaveOnExitSlot_ = std::clamp(std::stoi(value), 0, 10);
+                    }
+                    catch (...)
+                    {
+                    }
+                }
             }
             break;
         }
@@ -548,6 +596,19 @@ bool FlycastRuntime::LoadContent(const std::string &path)
     else if (!InitOverlay(romPath_))
     {
         LOG_WARN("HOME", "Overlay init failed; continuing without GBAStation overlay");
+    }
+
+    LoadFlycastPlayStats(romPath_);
+    if (autoLoadStateSlot_ > 0 && core_ && core_->IsGameLoaded())
+    {
+        const int slot = std::clamp(autoLoadStateSlot_ - 1, 0, 9);
+        const std::string statePath = FlycastStatePath(core_.get(), slot, savePath_);
+        LOG_INFO("HOME", "GBAStation auto load state slot=%d path=%s", slot, statePath.c_str());
+        struct stat st;
+        if (stat(statePath.c_str(), &st) == 0)
+            core_->LoadState(statePath);
+        else
+            LOG_WARN("HOME", "GBAStation auto load state missing slot=%d path=%s", slot, statePath.c_str());
     }
 
     lastTicks_ = SDL_GetTicks();
@@ -812,6 +873,22 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
 void FlycastRuntime::RunFrame()
 {
     UpdateScreenMode();
+
+    // Play time: accumulate wall time while the game is actually running;
+    // menu open pauses the session so menu time is not counted.
+    const uint32_t nowTicks = SDL_GetTicks();
+    if (overlay_ && overlay_->IsVisible())
+        playTimeLastTicks_ = 0;
+    else
+    {
+        if (playTimeLastTicks_ != 0)
+        {
+            const uint32_t delta = nowTicks - playTimeLastTicks_;
+            if (delta <= 1000)
+                sessionPlayFraction_ += (double)delta / 1000.0;
+        }
+        playTimeLastTicks_ = nowTicks;
+    }
     static uint32_t loggedFrames = 0;
     const bool traceFrame = loggedFrames < 3;
     if (traceFrame)
@@ -910,6 +987,58 @@ void FlycastRuntime::RenderFrame()
     }
 }
 
+// Bilinear scale an RGBA image so its width is at most kThumbMaxWidth.
+// Thumbnails are menu previews; keeping them small keeps PNGs well under
+// 500 KB even at high internal resolutions.
+static void ScaleRgbaForThumb(const uint8_t *src, int sw, int sh, std::vector<uint8_t> &dst, int &dw, int &dh)
+{
+    const int maxW = 320;
+    if (sw <= maxW)
+    {
+        dst.assign(src, src + static_cast<size_t>(sw) * sh * 4);
+        dw = sw;
+        dh = sh;
+        return;
+    }
+    dw = maxW;
+    dh = std::max(1, static_cast<int>(static_cast<double>(sh) * maxW / sw + 0.5));
+    dst.resize(static_cast<size_t>(dw) * dh * 4);
+    const double sx = static_cast<double>(sw) / dw;
+    const double sy = static_cast<double>(sh) / dh;
+    for (int y = 0; y < dh; ++y)
+    {
+        double fy = (y + 0.5) * sy - 0.5;
+        int y0 = static_cast<int>(fy);
+        if (y0 < 0)
+            y0 = 0;
+        int y1 = y0 + 1;
+        if (y1 >= sh)
+            y1 = sh - 1;
+        const double ty = fy - y0;
+        const uint8_t *row0 = src + static_cast<size_t>(y0) * sw * 4;
+        const uint8_t *row1 = src + static_cast<size_t>(y1) * sw * 4;
+        uint8_t *out = dst.data() + static_cast<size_t>(y) * dw * 4;
+        for (int x = 0; x < dw; ++x)
+        {
+            double fx = (x + 0.5) * sx - 0.5;
+            int x0 = static_cast<int>(fx);
+            if (x0 < 0)
+                x0 = 0;
+            int x1 = x0 + 1;
+            if (x1 >= sw)
+                x1 = sw - 1;
+            const double tx = fx - x0;
+            for (int c = 0; c < 4; ++c)
+            {
+                const double v = (1.0 - tx) * (1.0 - ty) * row0[x0 * 4 + c] +
+                                 tx * (1.0 - ty) * row0[x1 * 4 + c] +
+                                 (1.0 - tx) * ty * row1[x0 * 4 + c] +
+                                 tx * ty * row1[x1 * 4 + c];
+                out[x * 4 + c] = static_cast<uint8_t>(v + 0.5);
+            }
+        }
+    }
+}
 void FlycastRuntime::CaptureMenuThumbnailToMemory()
 {
     std::vector<uint8_t> rgba;
@@ -932,20 +1061,22 @@ void FlycastRuntime::WriteStateThumbnailFromMemory(const std::string &statePath)
         LOG_WARN("CORE", "State thumbnail: no captured frame in memory for %s", statePath.c_str());
         return;
     }
-    const uint32_t w = m_thumbW_;
-    const uint32_t h = m_thumbH_;
+    // Downscale to a compact thumbnail before encoding.
+    std::vector<uint8_t> scaled;
+    int w = 0, h = 0;
+    ScaleRgbaForThumb(m_thumbMemory_.data(), m_thumbW_, m_thumbH_, scaled, w, h);
     LOG_INFO("CORE", "State thumbnail written %ux%u for %s", w, h, statePath.c_str());
 
     std::vector<uint8_t> raw;
     raw.reserve(static_cast<std::size_t>(w) * (h + 1) * 3 / 2);
-    for (uint32_t y = 0; y < h; ++y)
+    for (int y = 0; y < h; ++y)
     {
         raw.push_back(0); // filter: None
         // Force opaque alpha: the swapchain readback alpha may be 0.
-        const uint8_t *row = m_thumbMemory_.data() + static_cast<std::ptrdiff_t>(y) * w * 4;
-        for (uint32_t x = 0; x < w; ++x)
+        const uint8_t *row = scaled.data() + static_cast<std::size_t>(y) * w * 4;
+        for (int x = 0; x < w; ++x)
         {
-            const uint8_t *p = row + static_cast<std::ptrdiff_t>(x) * 4;
+            const uint8_t *p = row + static_cast<std::size_t>(x) * 4;
             raw.push_back(p[0]);
             raw.push_back(p[1]);
             raw.push_back(p[2]);
@@ -956,7 +1087,7 @@ void FlycastRuntime::WriteStateThumbnailFromMemory(const std::string &statePath)
     uLongf compressedSize = compressBound(static_cast<uLong>(raw.size()));
     std::vector<uint8_t> compressed(compressedSize);
     if (compress2(compressed.data(), &compressedSize, raw.data(), static_cast<uLong>(raw.size()),
-                  Z_BEST_SPEED) != Z_OK)
+                  Z_BEST_COMPRESSION) != Z_OK)
         return;
     compressed.resize(compressedSize);
 
@@ -1000,6 +1131,14 @@ void FlycastRuntime::WriteStateThumbnailFromMemory(const std::string &statePath)
 void FlycastRuntime::Shutdown()
 {
     LOG_INFO("HOME", "Shutting down");
+    if (autoSaveOnExitSlot_ > 0 && core_)
+    {
+        const int slot = std::clamp(autoSaveOnExitSlot_ - 1, 0, 9);
+        const std::string statePath = FlycastStatePath(core_.get(), slot, savePath_);
+        LOG_INFO("HOME", "GBAStation auto save on exit slot=%d path=%s", slot, statePath.c_str());
+        core_->SaveState(statePath);
+    }
+    SaveFlycastPlayStats(romPath_);
     ShutdownOverlay();
     core_.reset();
     GBAStationVulkan::Shutdown();
@@ -1075,6 +1214,106 @@ void FlycastRuntime::SetFastForwardToggleMode(bool toggleMode)
     if (!toggleMode)
         fastForwardToggle_ = false;
     WriteFlycastConfigValue("fastforward.mode", toggleMode ? "toggle" : "hold");
+}
+
+void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
+{
+    playCount_ = 0;
+    playTimeTotal_ = 0;
+    playStatsFound_ = false;
+    savePath_.clear();
+    if (romPath.empty())
+        return;
+
+    const char *dbPaths[] = {
+        "sdmc:/GBAStation/data/GameData_DC.json",
+        "/GBAStation/data/GameData_DC.json",
+    };
+    const std::string normalized = NormalizeFlycastRomPath(romPath);
+    for (const char *dbPath : dbPaths)
+    {
+        std::ifstream file(dbPath, std::ios::binary);
+        if (!file)
+            continue;
+        try
+        {
+            nlohmann::json data;
+            file >> data;
+            if (!data.is_array())
+                continue;
+            for (auto &item : data)
+            {
+                if (!item.is_object())
+                    continue;
+                const std::string itemPath = item.value("path", std::string());
+                if (itemPath != romPath && NormalizeFlycastRomPath(itemPath) != normalized)
+                    continue;
+                playStatsFound_ = true;
+                playCount_ = item.value("playCount", 0) + 1;
+                playTimeTotal_ = item.value("playTime", 0);
+                savePath_ = item.value("savePath", std::string());
+                item["playCount"] = playCount_;
+                std::ofstream out(dbPath, std::ios::trunc);
+                if (out)
+                    out << data.dump(4);
+                LOG_INFO("HOME", "GBAStation play stats start playCount=%d playTime=%d", playCount_, playTimeTotal_);
+                return;
+            }
+        }
+        catch (...)
+        {
+            continue;
+        }
+    }
+}
+
+void FlycastRuntime::SaveFlycastPlayStats(const std::string &romPath)
+{
+    if (!playStatsFound_ || romPath.empty())
+        return;
+    if (sessionPlayFraction_ >= 0.5)
+        ++sessionPlaySeconds_;
+    const int totalPlayTime = playTimeTotal_ + std::max(0, sessionPlaySeconds_);
+    const std::string lastPlayed = CurrentFlycastTimestamp();
+
+    const char *dbPaths[] = {
+        "sdmc:/GBAStation/data/GameData_DC.json",
+        "/GBAStation/data/GameData_DC.json",
+    };
+    const std::string normalized = NormalizeFlycastRomPath(romPath);
+    for (const char *dbPath : dbPaths)
+    {
+        std::ifstream file(dbPath, std::ios::binary);
+        if (!file)
+            continue;
+        try
+        {
+            nlohmann::json data;
+            file >> data;
+            if (!data.is_array())
+                continue;
+            for (auto &item : data)
+            {
+                if (!item.is_object())
+                    continue;
+                const std::string itemPath = item.value("path", std::string());
+                if (itemPath != romPath && NormalizeFlycastRomPath(itemPath) != normalized)
+                    continue;
+                item["playCount"] = playCount_;
+                item["playTime"] = std::max(0, totalPlayTime);
+                item["lastPlayed"] = lastPlayed;
+                std::ofstream out(dbPath, std::ios::trunc);
+                if (out)
+                    out << data.dump(4);
+                LOG_INFO("HOME", "GBAStation play stats exit playCount=%d playTime=%d lastPlayed=%s", playCount_, totalPlayTime, lastPlayed.c_str());
+                return;
+            }
+        }
+        catch (...)
+        {
+            continue;
+        }
+    }
 }
 
 }  // namespace GBAStation

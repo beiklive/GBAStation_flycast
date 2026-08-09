@@ -52,6 +52,8 @@ private:
     void ApplyCoreInput(const FrameInput &input);
 
     void SetFastForwardMultiplier(float multiplier);
+    void LoadFlycastPlayStats(const std::string &romPath);
+    void SaveFlycastPlayStats(const std::string &romPath);
     void SetFastForwardToggleMode(bool toggleMode);
     // Menu-open thumbnail: capture the pure gameplay frame into memory when
     // the menu is opened; write it next to the state file on save.
@@ -83,7 +85,17 @@ private:
     std::string romPath_;
     std::string titleArg_;     // Display title from the launcher (argv[2])
     bool isArcade_ = false;    // NAOMI / Atomiswave (directionals -> analog axis)
-    uint32_t lastTicks_ = 0;
+    // Play stats + auto save/load (launcher config.cfg keys).
+    int playCount_ = 0;
+    int playTimeTotal_ = 0;
+    bool playStatsFound_ = false;
+    int sessionPlaySeconds_ = 0;
+    double sessionPlayFraction_ = 0.0;
+    uint32_t playTimeLastTicks_ = 0;
+    int autoLoadStateSlot_ = 0;
+    int autoSaveOnExitSlot_ = 0;
+    std::string savePath_; // per-game save dir from the launcher GameDB (savePath field)
+        uint32_t lastTicks_ = 0;
     float overlayBaseFontScale_ = 1.0f;
 };
 

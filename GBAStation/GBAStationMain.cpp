@@ -284,7 +284,9 @@ int Main::Run(int argc, char **argv)
     }
     Log("GBAStation main loop exit core=%s", runtime_.Name());
 
-    const bool chainload = runtime_.ShouldChainloadLauncher();
+    // Only chainload back to the launcher when it actually launched us
+    // (--return present). Launched directly (hbmenu), exit without returning.
+    const bool chainload = runtime_.ShouldChainloadLauncher() && HasLauncherReturnPath();
     runtime_.Shutdown();
     ShutdownPlatform();
     if (chainload)
