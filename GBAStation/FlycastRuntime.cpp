@@ -198,6 +198,26 @@ std::string FlycastStatePath(GBAStationCore *core, int slot, const std::string &
     return saveDir + "/" + name + ".ss" + std::to_string(slot);
 }
 
+std::string FlycastSessionPath(const std::string &launchDisc, const std::string &savePath)
+{
+    std::string name = launchDisc;
+    const size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos)
+        name = name.substr(slash + 1);
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos)
+        name = name.substr(0, dot);
+
+    std::string saveDir = savePath;
+    if (saveDir.empty())
+        saveDir = std::string(GBAStation::Paths::StatesRoot) + "/" + name;
+
+    struct stat st;
+    if (stat(saveDir.c_str(), &st) == -1)
+        mkdir(saveDir.c_str(), 0777);
+    return saveDir + "/flycast-session.json";
+}
+
 std::string NormalizeFlycastRomPath(std::string path)
 {
     for (char &ch : path)
@@ -260,11 +280,27 @@ public:
     }
     void SwapDisc(const std::string &path) override
     {
-        if (core_) core_->SwapDiskByPath(path);
+        if (core_ && core_->SwapDiskByPath(path) && runtime_)
+            runtime_->pendingDiscPath_ = path;
     }
-    void UpdateGamePath(const std::string &path) override
+    void UpdateGamePath(const std::string &) override
     {
-        if (core_) core_->SetGamePath(path);
+        // The launch path owns the GameDB identity and save directory. Disc 2
+        // must not become a separate game merely because it is mounted now.
+    }
+    std::vector<IOverlayHost::KnownDisc> GetKnownDiscs() override
+    {
+        std::vector<IOverlayHost::KnownDisc> result;
+        if (!runtime_)
+            return result;
+        for (const auto &disc : runtime_->GetKnownDiscs())
+            result.push_back({disc.path, disc.label, disc.path == runtime_->activeDiscPath_});
+        return result;
+    }
+    void ResumeLastDiscSession() override
+    {
+        if (runtime_)
+            runtime_->ResumeLastDiscSession();
     }
     std::string StateThumbPath(int slot) override
     {
@@ -587,7 +623,13 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
 bool FlycastRuntime::LoadContent(const std::string &path)
 {
     romPath_ = path.empty() ? romPath_ : path;
+    launchDiscPath_ = romPath_;
     LOG_INFO("HOME", "Loading ROM: %s", romPath_.c_str());
+
+    // savePath is a GameDB property of the title, not of the currently mounted
+    // disc. Load it before creating the per-game disc-session metadata.
+    LoadFlycastPlayStats(launchDiscPath_);
+    LoadDiscSession();
 
     if (!core_->LoadGame(romPath_))
     {
@@ -598,8 +640,12 @@ bool FlycastRuntime::LoadContent(const std::string &path)
         LOG_WARN("HOME", "Overlay init failed; continuing without GBAStation overlay");
     }
 
-    LoadFlycastPlayStats(romPath_);
-    if (autoLoadStateSlot_ > 0 && core_ && core_->IsGameLoaded())
+    const bool showStartupDiscChoice = HasPreviousDiscSession() && overlay_;
+    if (showStartupDiscChoice)
+    {
+        overlay_->ShowStartupDiscChoice(lastActiveDiscPath_, CanRestorePreviousDiscSession());
+    }
+    else if (autoLoadStateSlot_ > 0 && core_ && core_->IsGameLoaded())
     {
         const int slot = std::clamp(autoLoadStateSlot_ - 1, 0, 9);
         const std::string statePath = FlycastStatePath(core_.get(), slot, savePath_);
@@ -917,6 +963,22 @@ void FlycastRuntime::RunFrame()
                 core_->RunFrame();
             }
         }
+        bool swapSucceeded = false;
+        if (core_->ConsumeDiskSwapResult(swapSucceeded))
+        {
+            if (swapSucceeded && !pendingDiscPath_.empty())
+            {
+                RecordSuccessfulDiscSwap(pendingDiscPath_);
+                if (pendingDiscStateSlot_ >= 0)
+                    core_->LoadState(FlycastStatePath(core_.get(), pendingDiscStateSlot_, savePath_));
+            }
+            else if (!swapSucceeded)
+            {
+                LOG_WARN("CORE", "Disc swap failed; keeping the previous session metadata");
+            }
+            pendingDiscPath_.clear();
+            pendingDiscStateSlot_ = -1;
+        }
     }
     if (traceFrame)
         ++loggedFrames;
@@ -1214,6 +1276,165 @@ void FlycastRuntime::SetFastForwardToggleMode(bool toggleMode)
     if (!toggleMode)
         fastForwardToggle_ = false;
     WriteFlycastConfigValue("fastforward.mode", toggleMode ? "toggle" : "hold");
+}
+
+void FlycastRuntime::LoadDiscSession()
+{
+    knownDiscs_.clear();
+    activeDiscPath_ = launchDiscPath_;
+    lastActiveDiscPath_ = launchDiscPath_;
+    if (launchDiscPath_.empty())
+        return;
+
+    bool changed = false;
+    const std::string sessionPath = FlycastSessionPath(launchDiscPath_, savePath_);
+    std::ifstream in(sessionPath);
+    bool sessionLoaded = false;
+    if (in)
+    {
+        try
+        {
+            nlohmann::json session;
+            in >> session;
+            if (session.is_object())
+            {
+                // activeDisc was used by the first metadata revision. Keep it
+                // as a read-compatible fallback for existing session files.
+                lastActiveDiscPath_ = session.value("lastActiveDisc",
+                                                   session.value("activeDisc", launchDiscPath_));
+                const auto discs = session.find("knownDiscs");
+                if (discs != session.end() && discs->is_array())
+                {
+                    for (const auto &item : *discs)
+                    {
+                        if (!item.is_object())
+                            continue;
+                        const std::string discPath = item.value("path", std::string());
+                        if (discPath.empty())
+                            continue;
+                        knownDiscs_.push_back({discPath, item.value("label", std::string())});
+                    }
+                }
+            }
+            sessionLoaded = true;
+        }
+        catch (...)
+        {
+            LOG_WARN("HOME", "Ignoring invalid disc session metadata: %s", sessionPath.c_str());
+            knownDiscs_.clear();
+            activeDiscPath_ = launchDiscPath_;
+        }
+    }
+
+    const auto hasDisc = [this](const std::string &path) {
+        return std::any_of(knownDiscs_.begin(), knownDiscs_.end(), [&path](const KnownDisc &disc) {
+            return disc.path == path;
+        });
+    };
+    if (!hasDisc(launchDiscPath_))
+    {
+        knownDiscs_.insert(knownDiscs_.begin(), {launchDiscPath_, "Disc 1"});
+        changed = true;
+    }
+    if (!hasDisc(lastActiveDiscPath_))
+    {
+        lastActiveDiscPath_ = launchDiscPath_;
+        changed = true;
+    }
+    // A successful JSON read normally leaves the stream at EOF.  Do not use
+    // the stream's current state here: EOF would make every launch look like
+    // a missing session file and cause an unnecessary rewrite.
+    if (changed || !sessionLoaded)
+        SaveDiscSession();
+    LOG_INFO("HOME", "Disc session %s: %s (%zu known discs, last=%s)",
+             sessionLoaded ? "loaded" : "created", sessionPath.c_str(),
+             knownDiscs_.size(), lastActiveDiscPath_.c_str());
+}
+
+void FlycastRuntime::SaveDiscSession() const
+{
+    if (launchDiscPath_.empty())
+        return;
+
+    nlohmann::json session;
+    session["version"] = 1;
+    session["launchDisc"] = launchDiscPath_;
+    // The next launch begins with launchDisc. This field records the disc that
+    // was last mounted at the end of the prior session, for the future resume
+    // flow; it is deliberately distinct from this runtime's activeDiscPath_.
+    session["lastActiveDisc"] = lastActiveDiscPath_;
+    session["knownDiscs"] = nlohmann::json::array();
+    for (const auto &disc : knownDiscs_)
+        session["knownDiscs"].push_back({{"path", disc.path}, {"label", disc.label}});
+
+    const std::string path = FlycastSessionPath(launchDiscPath_, savePath_);
+    const std::string tempPath = path + ".tmp";
+    std::ofstream out(tempPath, std::ios::trunc);
+    if (!out)
+    {
+        LOG_WARN("HOME", "Unable to save disc session metadata: %s", tempPath.c_str());
+        return;
+    }
+    out << session.dump(2);
+    out.close();
+    if (std::rename(tempPath.c_str(), path.c_str()) != 0)
+    {
+        LOG_WARN("HOME", "Unable to replace disc session metadata: %s", path.c_str());
+        std::remove(tempPath.c_str());
+        return;
+    }
+    LOG_INFO("HOME", "Saved disc session: %s (%zu known discs)", path.c_str(), knownDiscs_.size());
+}
+
+void FlycastRuntime::RecordSuccessfulDiscSwap(const std::string &path)
+{
+    activeDiscPath_ = path;
+    lastActiveDiscPath_ = path;
+    const auto found = std::find_if(knownDiscs_.begin(), knownDiscs_.end(), [&path](const KnownDisc &disc) {
+        return disc.path == path;
+    });
+    if (found == knownDiscs_.end())
+        knownDiscs_.push_back({path, "Disc " + std::to_string(knownDiscs_.size() + 1)});
+    SaveDiscSession();
+    LOG_INFO("CORE", "Registered active disc in session metadata: %s", path.c_str());
+}
+
+std::vector<FlycastRuntime::KnownDisc> FlycastRuntime::GetKnownDiscs() const
+{
+    return knownDiscs_;
+}
+
+bool FlycastRuntime::HasPreviousDiscSession() const
+{
+    if (lastActiveDiscPath_.empty() || lastActiveDiscPath_ == launchDiscPath_)
+        return false;
+    struct stat st;
+    return stat(lastActiveDiscPath_.c_str(), &st) == 0;
+}
+
+bool FlycastRuntime::CanRestorePreviousDiscSession() const
+{
+    if (!HasPreviousDiscSession() || autoLoadStateSlot_ <= 0 || !core_)
+        return false;
+    const int slot = std::clamp(autoLoadStateSlot_ - 1, 0, 9);
+    struct stat st;
+    return stat(FlycastStatePath(core_.get(), slot, savePath_).c_str(), &st) == 0;
+}
+
+void FlycastRuntime::ResumeLastDiscSession()
+{
+    if (!core_ || !HasPreviousDiscSession())
+        return;
+    pendingDiscPath_ = lastActiveDiscPath_;
+    pendingDiscStateSlot_ = CanRestorePreviousDiscSession()
+        ? std::clamp(autoLoadStateSlot_ - 1, 0, 9)
+        : -1;
+    if (!core_->SwapDiskByPath(lastActiveDiscPath_))
+    {
+        pendingDiscPath_.clear();
+        pendingDiscStateSlot_ = -1;
+        LOG_WARN("CORE", "Unable to start restoration of the previous disc session");
+    }
 }
 
 void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)

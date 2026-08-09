@@ -16,7 +16,8 @@ enum class OverlayMenu
     QuickMenu,
     SaveStates,
     Settings,
-    DiscSelect
+    DiscSelect,
+    StartupDiscChoice
 };
 
 /// @brief Display mode for the emulator viewport
@@ -72,6 +73,7 @@ public:
     /// @brief Show/hide overlay
     void Show();
     void Hide();
+    void ShowStartupDiscChoice(const std::string &lastDiscLabel, bool canRestoreState);
     bool IsVisible() const { return m_currentMenu != OverlayMenu::None; }
 
     /// @brief Set game title for title card
@@ -116,6 +118,7 @@ private:
     void OpenDiscBrowser();
     void RefreshDiscBrowser();
     void RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize);
+    void RenderStartupDiscChoice(ImDrawList *dl, ImVec2 displaySize);
     void RenderRAAlerts(ImDrawList *dl, ImVec2 displaySize, float deltaTime);
     void ActivateTab(int tab);
     void EnsureRAIconLoaded();
@@ -159,12 +162,22 @@ private:
         std::string name;
         std::string path;
         bool isDir = false;
+        bool isKnownDisc = false;
+        bool isActiveDisc = false;
     };
     std::string m_discBrowserDir;
+    std::string m_discBrowserRoot;
+    bool m_discBrowserStartupMode = false;
+    std::vector<DiscBrowserEntry> m_registeredDiscs;
     std::vector<DiscBrowserEntry> m_discBrowserEntries;
     int m_discBrowserSelection = 0;
     float m_discBrowserScrollY = 0.0f;
     float m_discBrowserTargetScrollY = 0.0f;
+    std::string m_discBrowserNotice;
+    float m_discBrowserNoticeTimer = 0.0f;
+    int m_startupDiscChoice = 0;
+    bool m_startupCanRestoreState = false;
+    std::string m_startupLastDiscLabel;
 
     // Settings persistence
     void LoadCoreSettings();

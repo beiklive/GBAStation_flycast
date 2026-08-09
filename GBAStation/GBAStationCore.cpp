@@ -777,26 +777,6 @@ void GBAStationCore::RunFrame()
     // Process pending badge texture uploads (must happen on GL thread)
     ProcessPendingBadgeUploads();
 
-    if (m_swapPending && m_swapDelayFrames > 0)
-    {
-        m_swapDelayFrames--;
-        if (m_swapDelayFrames == 0)
-        {
-            retro_game_info info = {m_pendingSwapPath.c_str(), nullptr, 0, ""};
-            if (m_diskControl.replace_image_index(0, &info) && m_diskControl.set_image_index(0))
-            {
-                m_diskControl.set_eject_state(false);
-                LOG_CORE("Delayed SwapDisk executed successfully.");
-            }
-            else
-            {
-                LOG_ERROR("CORE", "Delayed SwapDisk failed during replace/set index.");
-                m_diskControl.set_eject_state(false);
-            }
-            m_swapPending = false;
-        }
-    }
-
     retro_run();
 
     if (m_rcClient && m_gameLoaded) {
@@ -1642,11 +1622,32 @@ bool GBAStationCore::SwapDiskByPath(const std::string &discPath)
         return false;
     }
 
-    m_swapPending = true;
-    m_swapDelayFrames = 120; // Wait 2 seconds of emulated time (at 60fps) before inserting
-    m_pendingSwapPath = discPath;
+    // The overlay pauses emulation while its menu is visible. Do not resume it
+    // with an empty drive: REIOS can observe that state and abort the game.
+    // Replace the path while ejected, then close the tray before returning.
+    retro_game_info info = {discPath.c_str(), nullptr, 0, ""};
+    bool swapped = m_diskControl.replace_image_index(0, &info)
+        && m_diskControl.set_image_index(0)
+        && m_diskControl.set_eject_state(false);
+    if (!swapped)
+    {
+        LOG_ERROR("CORE", "SwapDiskByPath: replacement failed");
+        // Best effort: leave the emulated drive closed even after a failed
+        // replacement, so the game never resumes on an open tray.
+        m_diskControl.set_eject_state(false);
+    }
+    m_diskSwapSucceeded = swapped;
+    m_diskSwapResultPending = true;
+    LOG_CORE("SwapDiskByPath: %s", swapped ? "completed" : "failed");
+    return true;
+}
 
-    LOG_CORE("SwapDiskByPath: Ejected tray, queued replacement");
+bool GBAStationCore::ConsumeDiskSwapResult(bool &success)
+{
+    if (!m_diskSwapResultPending)
+        return false;
+    success = m_diskSwapSucceeded;
+    m_diskSwapResultPending = false;
     return true;
 }
 

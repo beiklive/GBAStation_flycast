@@ -92,6 +92,9 @@ public:
     bool SwapDisk(unsigned index);
     bool SwapDiskByPath(const std::string &discPath);
     bool GetDiskLabel(unsigned index, std::string &label) const;
+    // The frontend consumes a completed path-based swap after retro_run() has
+    // returned. The swap itself is atomic while the overlay has paused play.
+    bool ConsumeDiskSwapResult(bool &success);
 
     /// @brief Save states
     void SaveState(const std::string &path);
@@ -184,10 +187,9 @@ private:
     retro_disk_control_ext_callback m_diskControl = {};
     bool m_hasDiskControl = false;
 
-    // Delayed Disk Swap
-    bool m_swapPending = false;
-    int m_swapDelayFrames = 0;
-    std::string m_pendingSwapPath;
+    // Completed disk-swap result, consumed by FlycastRuntime after the frame.
+    bool m_diskSwapResultPending = false;
+    bool m_diskSwapSucceeded = false;
 
     // Configuration
     std::string GetConfigValue(const std::string &key, const std::string &defaultVal = "");

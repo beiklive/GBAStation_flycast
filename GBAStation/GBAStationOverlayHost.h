@@ -69,6 +69,17 @@ public:
     virtual void LoadStateSlot(int slot) = 0;
     virtual void SwapDisc(const std::string &path) = 0;
     virtual void UpdateGamePath(const std::string &path) {}
+    struct KnownDisc {
+        std::string path;
+        std::string label;
+        bool active = false;
+    };
+    // User-registered discs for this game. They are shown before the file
+    // browser, making subsequent swaps a single confirmation.
+    virtual std::vector<KnownDisc> GetKnownDiscs() { return {}; }
+    // Starts a resume requested by the startup disc-choice dialog. The host
+    // mounts the remembered disc and, when available, restores its state.
+    virtual void ResumeLastDiscSession() {}
     /// PNG thumbnail path next to the state file (empty when unsupported).
     virtual std::string StateThumbPath(int slot) { return {}; }
     virtual ImTextureID CreateThumbTexture(const unsigned char *rgba, int width, int height) { return 0; }

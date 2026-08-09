@@ -29,6 +29,8 @@
 #include <sys/stat.h>
 #include <string>
 
+static std::string NormalizeDiscPath(const std::string &path);
+
 static float OverlayScale()
 {
     const float scale = ImGui::GetIO().FontGlobalScale;
@@ -591,6 +593,8 @@ void GBAStationOverlay::Update(float deltaTime)
     if (m_currentMenu != OverlayMenu::None)
     {
         m_animTimer += deltaTime;
+        if (m_discBrowserNoticeTimer > 0.0f)
+            m_discBrowserNoticeTimer = std::max(0.0f, m_discBrowserNoticeTimer - deltaTime);
         if (m_currentMenu == OverlayMenu::QuickMenu)
             m_quickMenuOpenTime += deltaTime;
 
@@ -616,9 +620,20 @@ void GBAStationOverlay::Show()
     }
 }
 
+void GBAStationOverlay::ShowStartupDiscChoice(const std::string &lastDiscLabel, bool canRestoreState)
+{
+    m_currentMenu = OverlayMenu::StartupDiscChoice;
+    m_startupDiscChoice = 0;
+    m_startupCanRestoreState = canRestoreState;
+    m_startupLastDiscLabel = lastDiscLabel;
+    m_sidebarFocused = false;
+    m_animTimer = 0.0f;
+}
+
 void GBAStationOverlay::Hide()
 {
     m_currentMenu = OverlayMenu::None;
+    m_discBrowserStartupMode = false;
     // HandleInput() returns immediately while hidden, so any navigation key
     // released after save/load would otherwise remain latched forever.
     m_navHeldPrev = 0;
@@ -1177,19 +1192,21 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                           ImVec2(width, (strip + 1) * (height / 8.0f)), IM_COL32(r, g, b, 240));
     }
 
+    if (m_currentMenu == OverlayMenu::StartupDiscChoice)
+    {
+        RenderStartupDiscChoice(dl, displaySize);
+        return;
+    }
+
     // Title
     dl->AddText(font, 26.0f * scale, ImVec2(64.0f * scale, 58.0f * scale), white, tr("游戏菜单").c_str());
     dl->AddRectFilled(ImVec2(56.0f * scale, 92.0f * scale),
                       ImVec2(width - 56.0f * scale, 93.0f * scale), IM_COL32(255, 255, 255, (int)(46.0f * ease)));
 
-    // Disc swap browser is a full-screen list view: the menu sidebar and the
-    // content area are both hidden, so the d-pad can only control the list.
+    // The disc browser owns the navigation while retaining the same two-panel
+    // visual language as the rest of the tab menu.
     if (m_currentMenu == OverlayMenu::DiscSelect)
     {
-        dl->AddText(font, 27.0f * scale, ImVec2(64.0f * scale, 108.0f * scale), white,
-                    tr("更换游戏碟片").c_str());
-        dl->AddRectFilled(ImVec2(56.0f * scale, 148.0f * scale),
-                          ImVec2(width - 56.0f * scale, 149.0f * scale), IM_COL32(0, 122, 204, (int)(71.0f * ease)));
         RenderDiscBrowser(dl, displaySize);
         return;
     }
@@ -2024,6 +2041,42 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     bool confirmPressed = (navPressed & HidNpadButton_A) != 0;
     bool backPressed = (navPressed & HidNpadButton_B) != 0;
 
+    if (m_currentMenu == OverlayMenu::StartupDiscChoice)
+    {
+        if (upPressed || downPressed)
+        {
+            m_startupDiscChoice = (m_startupDiscChoice + (upPressed ? 2 : 1)) % 3;
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
+        }
+        if (confirmPressed)
+        {
+            if (m_startupDiscChoice == 0)
+            {
+                Hide();
+            }
+            else if (m_startupDiscChoice == 1)
+            {
+                if (m_host)
+                    m_host->ResumeLastDiscSession();
+                Hide();
+            }
+            else
+            {
+                OpenDiscBrowser();
+                m_discBrowserStartupMode = true;
+                m_currentMenu = OverlayMenu::DiscSelect;
+                m_animTimer = 0.4f;
+            }
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
+        }
+        if (backPressed)
+        {
+            Hide();
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
+        }
+        return true;
+    }
+
     // The sidebar owns navigation until Right explicitly enters the active
     // page. Switching a tab is immediate: the right panel changes before any
     // confirmation is required.
@@ -2481,6 +2534,22 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 }
                 else
                 {
+                    const std::string selectedPath = NormalizeDiscPath(entry.path);
+                    const bool isCurrentDisc = std::any_of(
+                        m_registeredDiscs.begin(), m_registeredDiscs.end(),
+                        [&selectedPath](const DiscBrowserEntry &disc) {
+                            return disc.isActiveDisc &&
+                                   NormalizeDiscPath(disc.path) == selectedPath;
+                        });
+                    if (isCurrentDisc)
+                    {
+                        // Keep the selection in place and make the no-op explicit.
+                        // Sending this to the core would unnecessarily cycle the tray.
+                        m_discBrowserNotice = tr("当前光盘正在使用，不能重复选择");
+                        m_discBrowserNoticeTimer = 2.5f;
+                        GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
+                        return true;
+                    }
                     m_host->SwapDisc(entry.path);
                     m_host->UpdateGamePath(entry.path);
                     Hide();
@@ -2504,8 +2573,16 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             }
             else
             {
-                m_currentMenu = OverlayMenu::QuickMenu;
-                m_sidebarFocused = true;
+                if (m_discBrowserStartupMode)
+                {
+                    m_discBrowserStartupMode = false;
+                    m_currentMenu = OverlayMenu::StartupDiscChoice;
+                }
+                else
+                {
+                    m_currentMenu = OverlayMenu::QuickMenu;
+                    m_sidebarFocused = true;
+                }
             }
         }
         else
@@ -2561,11 +2638,55 @@ void GBAStationOverlay::OpenDiscBrowser()
     }
     if (m_discBrowserDir.empty())
         m_discBrowserDir = "sdmc:/GBAStation/roms";
+    m_discBrowserRoot = m_discBrowserDir;
     RefreshDiscBrowser();
+}
+
+void GBAStationOverlay::RenderStartupDiscChoice(ImDrawList *dl, ImVec2 displaySize)
+{
+    const float scale = OverlayScale();
+    ImFont *font = ImGui::GetFont();
+    if (!font)
+        return;
+
+    const float width = std::min(displaySize.x - 160.0f * scale, 780.0f * scale);
+    const float rowHeight = 68.0f * scale;
+    const float height = 330.0f * scale;
+    const ImVec2 panelMin((displaySize.x - width) * 0.5f, (displaySize.y - height) * 0.5f);
+    const ImVec2 panelMax = panelMin + ImVec2(width, height);
+    dl->AddRectFilled(panelMin, panelMax, IM_COL32(13, 22, 32, 248), 16.0f * scale);
+    dl->AddRect(panelMin, panelMax, IM_COL32(75, 146, 203, 220), 16.0f * scale, 0, 2.0f);
+
+    dl->AddText(font, 28.0f * scale, panelMin + ImVec2(34.0f * scale, 30.0f * scale),
+                IM_COL32(240, 247, 255, 255), tr("检测到上次使用的光盘").c_str());
+    const std::string lastLine = tr("上次光盘：") + m_startupLastDiscLabel;
+    dl->AddText(font, 19.0f * scale, panelMin + ImVec2(34.0f * scale, 70.0f * scale),
+                IM_COL32(184, 204, 224, 255), lastLine.c_str());
+
+    const std::string choices[] = {
+        tr("从启动光盘开始"),
+        m_startupCanRestoreState ? tr("继续上次会话（换盘并读档）") : tr("插入上次使用的光盘"),
+        tr("选择其他光盘...")
+    };
+    for (int i = 0; i < 3; ++i)
+    {
+        const ImVec2 rowMin = panelMin + ImVec2(28.0f * scale, 112.0f * scale + i * rowHeight);
+        const ImVec2 rowMax = rowMin + ImVec2(width - 56.0f * scale, rowHeight - 8.0f * scale);
+        const bool selected = i == m_startupDiscChoice;
+        if (selected)
+        {
+            dl->AddRectFilled(rowMin, rowMax, IM_COL32(0, 96, 158, 230), 9.0f * scale);
+            dl->AddRect(rowMin, rowMax, IM_COL32(90, 190, 255, 225), 9.0f * scale, 0, 2.0f);
+        }
+        dl->AddText(font, 22.0f * scale, rowMin + ImVec2(18.0f * scale, 14.0f * scale),
+                    selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(204, 224, 244, 230),
+                    choices[i].c_str());
+    }
 }
 
 void GBAStationOverlay::RefreshDiscBrowser()
 {
+    m_registeredDiscs.clear();
     m_discBrowserEntries.clear();
     m_discBrowserSelection = 0;
     m_discBrowserScrollY = 0.0f;
@@ -2577,6 +2698,20 @@ void GBAStationOverlay::RefreshDiscBrowser()
 
     std::vector<DiscBrowserEntry> dirs;
     std::vector<DiscBrowserEntry> files;
+    if (m_host)
+    {
+        for (const auto &disc : m_host->GetKnownDiscs())
+        {
+            if (disc.path.empty())
+                continue;
+            DiscBrowserEntry entry;
+            entry.name = disc.label.empty() ? disc.path : disc.label;
+            entry.path = disc.path;
+            entry.isKnownDisc = true;
+            entry.isActiveDisc = disc.active;
+            m_registeredDiscs.push_back(std::move(entry));
+        }
+    }
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL)
     {
@@ -2617,24 +2752,83 @@ void GBAStationOverlay::RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize)
     if (!font)
         return;
 
-    // Larger browser: wider, taller, starts higher, with an opaque panel.
-    const float contentX = 200.0f * scale;
-    const float contentW = displaySize.x - contentX - 40.0f * scale;
-    const float viewTop = 132.0f * scale;
+    // Reuse the tab menu's sidebar/content grid. The left rail gives the user
+    // context, while the right panel owns the selectable filesystem rows.
+    const float sidebarX = 48.0f * scale;
+    const float sidebarW = 336.0f * scale;
+    const float panelTop = 116.0f * scale;
+    const float panelBottom = displaySize.y - 70.0f * scale;
+    const float contentX = sidebarX + sidebarW + 28.0f * scale;
+    const float contentW = displaySize.x - contentX - 48.0f * scale;
+    const float viewTop = panelTop + 108.0f * scale;
     const float rowH = 58.0f * scale;
-    const float contentH = 520.0f * scale;
+    const float contentH = std::max(rowH, panelBottom - viewTop - 14.0f * scale);
     const int visible = std::min((int)(contentH / rowH), (int)m_discBrowserEntries.size());
 
-    // Opaque panel behind the whole list.
-    const ImVec2 panelMin(contentX - 20.0f * scale, viewTop - 52.0f * scale);
-    const ImVec2 panelMax(contentX + contentW + 20.0f * scale, viewTop + contentH + 16.0f * scale);
-    dl->AddRectFilled(panelMin, panelMax, IM_COL32(13, 22, 32, 242), 12.0f * scale);
-    dl->AddRect(panelMin, panelMax, IM_COL32(56, 96, 132, 180), 12.0f * scale, 0, 1.5f * scale);
+    const ImVec2 sideMin(sidebarX, panelTop);
+    const ImVec2 sideMax(sidebarX + sidebarW, panelBottom);
+    dl->AddRectFilled(sideMin, sideMax, IM_COL32(20, 31, 44, 238), 12.0f * scale);
+    dl->AddRect(sideMin, sideMax, IM_COL32(56, 96, 132, 176), 12.0f * scale, 0, 1.5f * scale);
+    char discIcon[8];
+    EncodeUtf8(discIcon, 0xE161);
+    dl->AddText(font, 36.0f * scale, sideMin + ImVec2(24.0f * scale, 24.0f * scale),
+                IM_COL32(112, 204, 255, 255), discIcon);
+    dl->AddText(font, 25.0f * scale, sideMin + ImVec2(76.0f * scale, 28.0f * scale),
+                IM_COL32(240, 247, 255, 255), tr("更换游戏碟片").c_str());
+    dl->AddText(font, 18.0f * scale, sideMin + ImVec2(24.0f * scale, 90.0f * scale),
+                IM_COL32(184, 204, 224, 230), tr("已登记光盘").c_str());
+    dl->AddLine(sideMin + ImVec2(24.0f * scale, 128.0f * scale),
+                ImVec2(sideMax.x - 24.0f * scale, sideMin.y + 128.0f * scale),
+                IM_COL32(255, 255, 255, 42), 1.0f * scale);
+    if (m_registeredDiscs.empty())
+    {
+        dl->AddText(font, 19.0f * scale, sideMin + ImVec2(24.0f * scale, 156.0f * scale),
+                    IM_COL32(184, 204, 224, 220), tr("尚未登记其他光盘").c_str());
+    }
+    else
+    {
+        const float registeredRowH = 54.0f * scale;
+        for (size_t i = 0; i < m_registeredDiscs.size(); ++i)
+        {
+            const DiscBrowserEntry &disc = m_registeredDiscs[i];
+            const float y = sideMin.y + 146.0f * scale + i * registeredRowH;
+            if (y + registeredRowH > sideMax.y - 16.0f * scale)
+                break;
+            const ImVec2 rowMin(sideMin.x + 16.0f * scale, y);
+            const ImVec2 rowMax(sideMax.x - 16.0f * scale, y + registeredRowH - 6.0f * scale);
+            if (disc.isActiveDisc)
+            {
+                dl->AddRectFilled(rowMin, rowMax, IM_COL32(0, 82, 136, 170), 8.0f * scale);
+                dl->AddRect(rowMin, rowMax, IM_COL32(79, 179, 255, 180), 8.0f * scale, 0, 1.0f * scale);
+            }
+            char icon[8];
+            EncodeUtf8(icon, 0xE161);
+            dl->AddText(font, 22.0f * scale, rowMin + ImVec2(10.0f * scale, 12.0f * scale),
+                        IM_COL32(112, 204, 255, 255), icon);
+            const std::string prefix = disc.isActiveDisc ? tr("[当前光盘] ")
+                                                        : "[" + tr("光盘 ") + std::to_string(i + 1) + "] ";
+            const std::string label = prefix + disc.name;
+            dl->AddText(font, 18.0f * scale, rowMin + ImVec2(42.0f * scale, 16.0f * scale),
+                        disc.isActiveDisc ? IM_COL32(240, 247, 255, 255) : IM_COL32(204, 224, 244, 230), label.c_str());
+        }
+    }
 
-    // Path header.
-    const float ease = 1.0f;
-    dl->AddText(font, 21.0f * scale, ImVec2(contentX, viewTop - 40.0f * scale),
-                IM_COL32(184, 204, 224, 219), m_discBrowserDir.c_str());
+    const ImVec2 panelMin(contentX, panelTop);
+    const ImVec2 panelMax(contentX + contentW, panelBottom);
+    dl->AddRectFilled(panelMin, panelMax, IM_COL32(13, 22, 32, 244), 12.0f * scale);
+    dl->AddRect(panelMin, panelMax, IM_COL32(56, 96, 132, 180), 12.0f * scale, 0, 1.5f * scale);
+    dl->AddText(font, 24.0f * scale, panelMin + ImVec2(24.0f * scale, 20.0f * scale),
+                IM_COL32(240, 247, 255, 255), tr("文件浏览器").c_str());
+    dl->AddText(font, 18.0f * scale, panelMin + ImVec2(24.0f * scale, 54.0f * scale),
+                IM_COL32(184, 204, 224, 220), m_discBrowserDir.c_str());
+    dl->AddLine(panelMin + ImVec2(20.0f * scale, 90.0f * scale),
+                ImVec2(panelMax.x - 20.0f * scale, panelMin.y + 90.0f * scale),
+                IM_COL32(0, 122, 204, 150), 1.0f * scale);
+    if (m_discBrowserNoticeTimer > 0.0f)
+    {
+        dl->AddText(font, 17.0f * scale, panelMin + ImVec2(24.0f * scale, 78.0f * scale),
+                    IM_COL32(255, 190, 100, 255), m_discBrowserNotice.c_str());
+    }
 
     // Smooth scroll.
     m_discBrowserScrollY += (m_discBrowserTargetScrollY - m_discBrowserScrollY) * 0.25f;
@@ -2666,14 +2860,33 @@ void GBAStationOverlay::RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize)
             dl->AddRectFilled(ImVec2(contentX, y), ImVec2(contentX + contentW, y + rowH - 6.0f * scale),
                               IM_COL32(255, 255, 255, 9), 10.0f * scale);
         }
+        const DiscBrowserEntry &entry = m_discBrowserEntries[index];
+        int registeredIndex = -1;
+        for (size_t i = 0; i < m_registeredDiscs.size(); ++i)
+        {
+            if (NormalizeDiscPath(m_registeredDiscs[i].path) == NormalizeDiscPath(entry.path))
+            {
+                registeredIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        const bool isCurrentDisc = registeredIndex >= 0 && m_registeredDiscs[registeredIndex].isActiveDisc;
         char icon[8];
-        EncodeUtf8(icon, m_discBrowserEntries[index].isDir ? 0xE2C8 : 0xE161);
+        EncodeUtf8(icon, entry.isDir ? 0xE2C8 : 0xE161);
         dl->AddText(font, 26.0f * scale, ImVec2(contentX + 12.0f * scale, y + 12.0f * scale),
-                    IM_COL32(130, 190, 255, 235), icon);
+                    isCurrentDisc ? IM_COL32(255, 190, 100, 255) : IM_COL32(130, 190, 255, 235), icon);
+        std::string rowLabel = entry.name;
+        if (!entry.isDir && registeredIndex >= 0)
+        {
+            const std::string discPrefix = "[" + tr("光盘 ") +
+                                           std::to_string(registeredIndex + 1) + "] ";
+            const std::string prefix = isCurrentDisc ? tr("[当前光盘] ") + discPrefix : discPrefix;
+            rowLabel = prefix + rowLabel;
+        }
         dl->AddText(font, 22.0f * scale,
                     ImVec2(contentX + 52.0f * scale, y + (rowH - 22.0f * scale) * 0.5f),
-                    selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(204, 224, 244, 225),
-                    m_discBrowserEntries[index].name.c_str());
+                    isCurrentDisc ? IM_COL32(255, 220, 175, 255) : (selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(204, 224, 244, 225)),
+                    rowLabel.c_str());
     }
 }
 

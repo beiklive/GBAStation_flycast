@@ -55,6 +55,17 @@ private:
     void LoadFlycastPlayStats(const std::string &romPath);
     void SaveFlycastPlayStats(const std::string &romPath);
     void SetFastForwardToggleMode(bool toggleMode);
+    struct KnownDisc {
+        std::string path;
+        std::string label;
+    };
+    void LoadDiscSession();
+    void SaveDiscSession() const;
+    void RecordSuccessfulDiscSwap(const std::string &path);
+    std::vector<KnownDisc> GetKnownDiscs() const;
+    bool HasPreviousDiscSession() const;
+    bool CanRestorePreviousDiscSession() const;
+    void ResumeLastDiscSession();
     // Menu-open thumbnail: capture the pure gameplay frame into memory when
     // the menu is opened; write it next to the state file on save.
     void CaptureMenuThumbnailToMemory();
@@ -95,6 +106,12 @@ private:
     int autoLoadStateSlot_ = 0;
     int autoSaveOnExitSlot_ = 0;
     std::string savePath_; // per-game save dir from the launcher GameDB (savePath field)
+    std::string launchDiscPath_;
+    std::string activeDiscPath_;
+    std::string lastActiveDiscPath_;
+    std::string pendingDiscPath_;
+    int pendingDiscStateSlot_ = -1;
+    std::vector<KnownDisc> knownDiscs_;
         uint32_t lastTicks_ = 0;
     float overlayBaseFontScale_ = 1.0f;
 };
