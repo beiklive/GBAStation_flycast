@@ -1253,10 +1253,16 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
                 playTimeTotal_ = item.value("playTime", 0);
                 savePath_ = item.value("savePath", std::string());
                 item["playCount"] = playCount_;
+                // Close the read stream first: the Switch stdio/fs layer refuses a
+                // second handle (write/trunc) on a file that is still open for read.
+                file.close();
                 std::ofstream out(dbPath, std::ios::trunc);
-                if (out)
+                if (out) {
                     out << data.dump(4);
-                LOG_INFO("HOME", "GBAStation play stats start playCount=%d playTime=%d", playCount_, playTimeTotal_);
+                    LOG_INFO("HOME", "GBAStation play stats start playCount=%d playTime=%d", playCount_, playTimeTotal_);
+                } else {
+                    LOG_WARN("HOME", "GBAStation play stats write failed: %s", dbPath);
+                }
                 return;
             }
         }
@@ -1302,10 +1308,16 @@ void FlycastRuntime::SaveFlycastPlayStats(const std::string &romPath)
                 item["playCount"] = playCount_;
                 item["playTime"] = std::max(0, totalPlayTime);
                 item["lastPlayed"] = lastPlayed;
+                // Close the read stream first: the Switch stdio/fs layer refuses a
+                // second handle (write/trunc) on a file that is still open for read.
+                file.close();
                 std::ofstream out(dbPath, std::ios::trunc);
-                if (out)
+                if (out) {
                     out << data.dump(4);
-                LOG_INFO("HOME", "GBAStation play stats exit playCount=%d playTime=%d lastPlayed=%s", playCount_, totalPlayTime, lastPlayed.c_str());
+                    LOG_INFO("HOME", "GBAStation play stats exit playCount=%d playTime=%d lastPlayed=%s", playCount_, totalPlayTime, lastPlayed.c_str());
+                } else {
+                    LOG_WARN("HOME", "GBAStation play stats write failed: %s", dbPath);
+                }
                 return;
             }
         }
