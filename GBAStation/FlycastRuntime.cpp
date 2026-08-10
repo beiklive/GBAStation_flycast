@@ -768,20 +768,24 @@ void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
         // NAOMI/Atomiswave key mapping is handled by the core (map_gamepad_button
         // selects the per-platform joymap after the game is loaded), so the
         // frontend always forwards the neutral layout.
+        //
+        // The stock Dreamcast pad exposes L/R as analog triggers on the
+        // L2/R2 channels (the JOYPAD_L/R bits map to the DC C/Z bits, which
+        // the stock pad masks off), so L/R are fed on both channels.
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_A, down(Pad_A));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_B, down(Pad_B));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_X, down(Pad_X));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_Y, down(Pad_Y));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L, down(Pad_L));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R, down(Pad_R));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L2, down(Pad_L));   // DC left trigger
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R2, down(Pad_R));   // DC right trigger
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_START, down(Pad_Start));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_SELECT, down(Pad_Select));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_UP, down(Pad_Up));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_DOWN, down(Pad_Down));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_LEFT, down(Pad_Left));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_RIGHT, down(Pad_Right));
-        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L2, down(Pad_L2));
-        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R2, down(Pad_R2));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L3, down(Pad_L3));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R3, down(Pad_R3));
 

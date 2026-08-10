@@ -191,8 +191,10 @@ uint64_t MapButtons(u64 hid)
     if (BindingHeld("dc.handle.right", "PAD_RIGHT", hid)) b |= Pad_Right;
     if (BindingHeld("dc.handle.l", "PAD_LB", hid))     b |= Pad_L;
     if (BindingHeld("dc.handle.r", "PAD_RB", hid))     b |= Pad_R;
-    // The Dreamcast pad has no L2/R2/L3/R3; those bindings were copied from
-    // another core and must not be parsed.
+    // The Dreamcast pad has no L2/R2/L3/R3 configurable bindings; its shoulder
+    // buttons are analog triggers driven from Pad_L/Pad_R on the L2/R2
+    // channels (see ApplyCoreInput).  Bindings copied from other cores for
+    // these keys must not be parsed.
     if (BindingHeld("dc.handle.start", "PAD_START", hid)) b |= Pad_Start;
     if (BindingHeld("dc.handle.select", "PAD_BACK", hid)) b |= Pad_Select;
 
