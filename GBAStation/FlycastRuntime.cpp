@@ -764,18 +764,14 @@ void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
         const uint64_t b = player.buttons;
         auto down = [&](PadButton bit) { return (b & bit) != 0; };
 
-        // Forward the neutral positional layout to the core; the core's
-        // per-platform joymap (dc_joymap for Dreamcast, map_gamepad_button for
-        // NAOMI/Atomiswave) selects the actual buttons.  Positional south/east
-        // must land on JOYPAD_B/JOYPAD_A so the core maps them back onto the
-        // physical south/east buttons of the DC pad.  L/R stay on JOYPAD_L/R:
-        // NAOMI/Atomiswave use them as real buttons, and the standard DC pad
-        // masks its C/Z bits so they are inert there (same as upstream
-        // libretro behaviour; DC analog triggers are a RetroArch-side mapping).
-        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_B, down(Pad_A));    // south
-        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_A, down(Pad_B));    // east
-        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_X, down(Pad_X));    // west
-        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_Y, down(Pad_Y));    // north
+        // Dreamcast follows physical disposition through the neutral pad map.
+        // NAOMI/Atomiswave key mapping is handled by the core (map_gamepad_button
+        // selects the per-platform joymap after the game is loaded), so the
+        // frontend always forwards the neutral layout.
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_A, down(Pad_A));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_B, down(Pad_B));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_X, down(Pad_X));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_Y, down(Pad_Y));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L, down(Pad_L));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R, down(Pad_R));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_START, down(Pad_Start));
@@ -784,6 +780,8 @@ void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_DOWN, down(Pad_Down));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_LEFT, down(Pad_Left));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_RIGHT, down(Pad_Right));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L2, down(Pad_L2));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R2, down(Pad_R2));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L3, down(Pad_L3));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R3, down(Pad_R3));
 

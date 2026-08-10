@@ -178,28 +178,23 @@ PadState g_pads[MaxPlayers];
 /// physical layout (A=east, B=south, X=north, Y=west) is translated to SDL
 /// positional (A=south, B=east, X=west, Y=north) so consumers behave the same
 /// as on the SDL libretro path.
-///
-/// Game buttons use a fixed physical layout (restored flycast native mapping):
-/// the Dreamcast pad is driven by the core's dc_joymap, so the frontend only
-/// forwards the neutral positional bits and never overrides them with
-/// dc.handle.* config.  Only the frontend hotkeys (menu / fastforward) remain
-/// configurable.
 uint64_t MapButtons(u64 hid)
 {
     uint64_t b = 0;
-    // Fixed physical layout: Switch B(南)→south, A(东)→east, Y(西)→west, X(北)→north.
-    if (hid & HidNpadButton_B)         b |= Pad_A;   // south
-    if (hid & HidNpadButton_A)         b |= Pad_B;   // east
-    if (hid & HidNpadButton_Y)         b |= Pad_X;   // west
-    if (hid & HidNpadButton_X)         b |= Pad_Y;   // north
-    if (hid & HidNpadButton_Up)        b |= Pad_Up;
-    if (hid & HidNpadButton_Down)      b |= Pad_Down;
-    if (hid & HidNpadButton_Left)      b |= Pad_Left;
-    if (hid & HidNpadButton_Right)     b |= Pad_Right;
-    if (hid & HidNpadButton_L)         b |= Pad_L;
-    if (hid & HidNpadButton_R)         b |= Pad_R;
-    if (hid & HidNpadButton_Plus)      b |= Pad_Start;
-    if (hid & HidNpadButton_Minus)     b |= Pad_Select;
+    if (BindingHeld("dc.handle.b", "PAD_B", hid))      b |= Pad_A;   // south
+    if (BindingHeld("dc.handle.a", "PAD_A", hid))      b |= Pad_B;   // east
+    if (BindingHeld("dc.handle.y", "PAD_Y", hid))      b |= Pad_X;   // west
+    if (BindingHeld("dc.handle.x", "PAD_X", hid))      b |= Pad_Y;   // north
+    if (BindingHeld("dc.handle.up", "PAD_UP", hid))    b |= Pad_Up;
+    if (BindingHeld("dc.handle.down", "PAD_DOWN", hid)) b |= Pad_Down;
+    if (BindingHeld("dc.handle.left", "PAD_LEFT", hid)) b |= Pad_Left;
+    if (BindingHeld("dc.handle.right", "PAD_RIGHT", hid)) b |= Pad_Right;
+    if (BindingHeld("dc.handle.l", "PAD_LB", hid))     b |= Pad_L;
+    if (BindingHeld("dc.handle.r", "PAD_RB", hid))     b |= Pad_R;
+    // The Dreamcast pad has no L2/R2/L3/R3; those bindings were copied from
+    // another core and must not be parsed.
+    if (BindingHeld("dc.handle.start", "PAD_START", hid)) b |= Pad_Start;
+    if (BindingHeld("dc.handle.select", "PAD_BACK", hid)) b |= Pad_Select;
 
     // Frontend actions must use their own config keys.  Deriving the menu
     // hotkey from mapped Start/Select made the original Flycast shortcut win
