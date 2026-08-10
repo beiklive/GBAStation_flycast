@@ -465,24 +465,10 @@ FlycastRuntime::FlycastRuntime(LogCallback log) : log_(std::move(log)) {}
 
 FlycastRuntime::~FlycastRuntime() = default;
 
-// NAOMI/Atomiswave, detected by extension (matches flycast's libretro frontend).
-static bool IsArcadePath(const std::string &path)
-{
-    size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos)
-        return false;
-    std::string ext = path.substr(dot);
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    return ext == ".lst" || ext == ".bin" || ext == ".dat" || ext == ".zip" || ext == ".7z" ||
-           ext == ".chd" || ext == ".gdi" || ext == ".cdi" || ext == ".cue" || ext == ".iso";
-}
-
 bool FlycastRuntime::Configure(const LaunchInfo &launch)
 {
     romPath_ = launch.contentPath.empty() ? GBAStationConfig::TEST_ROM : launch.contentPath;
     titleArg_ = launch.title;
-    isArcade_ = IsArcadePath(romPath_);
     return true;
 }
 
@@ -778,27 +764,16 @@ void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
         const uint64_t b = player.buttons;
         auto down = [&](PadButton bit) { return (b & bit) != 0; };
 
-        if (isArcade_)
-        {
-            // Arcade layout based on observed game actions:
-            // Switch Y uses the low-kick source, Switch X uses the high-kick source.
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_B, down(Pad_A));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_A, down(Pad_B));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_X, down(Pad_X));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R, down(Pad_Y));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L, down(Pad_L));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_Y, down(Pad_R));
-        }
-        else
-        {
-            // Dreamcast follows physical disposition through the neutral pad map.
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_A, down(Pad_A));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_B, down(Pad_B));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_X, down(Pad_X));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_Y, down(Pad_Y));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L, down(Pad_L));
-            core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R, down(Pad_R));
-        }
+        // Dreamcast follows physical disposition through the neutral pad map.
+        // NAOMI/Atomiswave key mapping is handled by the core (map_gamepad_button
+        // selects the per-platform joymap after the game is loaded), so the
+        // frontend always forwards the neutral layout.
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_A, down(Pad_A));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_B, down(Pad_B));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_X, down(Pad_X));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_Y, down(Pad_Y));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L, down(Pad_L));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R, down(Pad_R));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_START, down(Pad_Start));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_SELECT, down(Pad_Select));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_UP, down(Pad_Up));
@@ -814,31 +789,6 @@ void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
         core_->SetAnalogState(port, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y, player.leftStickY);
         core_->SetAnalogState(port, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, player.rightStickX);
         core_->SetAnalogState(port, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, player.rightStickY);
-
-        // Arcade games read directions from either the digital JVS stick
-        // (fighters) or the analog axis (racers), so cross-feed d-pad <-> stick.
-        // Dreamcast keeps its native d-pad + analog and is left alone.
-        if (isArcade_)
-        {
-            // d-pad -> axis
-            if (down(Pad_Left) || down(Pad_Right))
-                core_->SetAnalogState(port, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X,
-                                      down(Pad_Left) ? -0x7fff : 0x7fff);
-            if (down(Pad_Up) || down(Pad_Down))
-                core_->SetAnalogState(port, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y,
-                                      down(Pad_Up) ? -0x7fff : 0x7fff);
-
-            // stick -> d-pad (lenient threshold to keep diagonals)
-            const int16_t kDirThreshold = 0x2800;
-            if (player.leftStickX <= -kDirThreshold)
-                core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_LEFT, true);
-            if (player.leftStickX >= kDirThreshold)
-                core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_RIGHT, true);
-            if (player.leftStickY <= -kDirThreshold)
-                core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_UP, true);
-            if (player.leftStickY >= kDirThreshold)
-                core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_DOWN, true);
-        }
     }
 }
 

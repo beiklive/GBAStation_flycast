@@ -95,7 +95,6 @@ private:
     uint32_t m_thumbH_ = 0;
     std::string romPath_;
     std::string titleArg_;     // Display title from the launcher (argv[2])
-    bool isArcade_ = false;    // NAOMI / Atomiswave (directionals -> analog axis)
     // Play stats + auto save/load (launcher config.cfg keys).
     int playCount_ = 0;
     int playTimeTotal_ = 0;
