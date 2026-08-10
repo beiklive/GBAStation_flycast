@@ -768,16 +768,20 @@ void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
         // per-platform joymap (dc_joymap for Dreamcast, map_gamepad_button for
         // NAOMI/Atomiswave) selects the actual buttons.  Positional south/east
         // must land on JOYPAD_B/JOYPAD_A so the core maps them back onto the
-        // physical south/east buttons of the DC pad.  L/R stay on JOYPAD_L/R:
-        // NAOMI/Atomiswave use them as real buttons, and the standard DC pad
-        // masks its C/Z bits so they are inert there (same as upstream
-        // libretro behaviour; DC analog triggers are a RetroArch-side mapping).
+        // physical south/east buttons of the DC pad.
+        // L/R are fed on both JOYPAD_L/R and JOYPAD_L2/R2: the DC pad exposes
+        // its shoulder buttons as analog triggers on the L2/R2 channels (the
+        // JOYPAD_L/R bits map to the DC C/Z bits which the stock pad masks),
+        // while NAOMI/Atomiswave use JOYPAD_L/R as real buttons (BTN5/BTN4);
+        // their L2/R2 bits only map to the rarely used BTN7/BTN6.
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_B, down(Pad_A));    // south
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_A, down(Pad_B));    // east
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_X, down(Pad_X));    // west
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_Y, down(Pad_Y));    // north
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L, down(Pad_L));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R, down(Pad_R));
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L2, down(Pad_L));   // DC left trigger
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R2, down(Pad_R));   // DC right trigger
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_START, down(Pad_Start));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_SELECT, down(Pad_Select));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_UP, down(Pad_Up));
