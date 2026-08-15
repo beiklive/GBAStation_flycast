@@ -67,6 +67,11 @@ private:
     };
     void LoadCheats();
     void SetCheatEnabled(size_t index, bool enabled);
+    void SetCheatPath(const std::string &path);
+    void AddCheat(const std::string &name, const std::string &code);
+    void RenameCheat(size_t index, const std::string &name);
+    void SetCheatCode(size_t index, const std::string &code);
+    void DeleteCheat(size_t index);
     bool SaveCheats() const;
     struct KnownDisc {
         std::string path;
@@ -105,7 +110,7 @@ private:
     bool fastForwardToggle_ = false;
     bool fastForwardToggleMode_ = false;
     float fastForwardMultiplier_ = 2.0f;
-    bool showFps_ = false;
+    bool showFps_ = true;
     double measuredFps_ = 0.0;
     uint64_t fpsWindowStart_ = 0;
     unsigned fpsWindowFrames_ = 0;

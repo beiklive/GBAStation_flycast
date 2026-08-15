@@ -29,6 +29,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <sys/stat.h>
 
@@ -455,7 +456,7 @@ public:
             return result;
         result.reserve(runtime_->cheats_.size());
         for (const auto &cheat : runtime_->cheats_)
-            result.push_back({cheat.name, cheat.enabled});
+            result.push_back({cheat.name, cheat.code, cheat.enabled});
         return result;
     }
     void SetCheatEnabled(size_t index, bool enabled) override
@@ -463,6 +464,15 @@ public:
         if (runtime_)
             runtime_->SetCheatEnabled(index, enabled);
     }
+    std::string GetCheatPath() override
+    {
+        return runtime_ ? runtime_->cheatPath_ : std::string();
+    }
+    void SetCheatPath(const std::string &path) override { if (runtime_) runtime_->SetCheatPath(path); }
+    void AddCheat(const std::string &name, const std::string &code) override { if (runtime_) runtime_->AddCheat(name, code); }
+    void RenameCheat(size_t index, const std::string &name) override { if (runtime_) runtime_->RenameCheat(index, name); }
+    void SetCheatCode(size_t index, const std::string &code) override { if (runtime_) runtime_->SetCheatCode(index, code); }
+    void DeleteCheat(size_t index) override { if (runtime_) runtime_->DeleteCheat(index); }
 
     float GetFastForwardMultiplier() override
     {
@@ -662,9 +672,18 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
                 const std::size_t eq = line.find('=');
                 if (eq == std::string::npos)
                     continue;
-                const std::string key = line.substr(0, eq);
-                std::string value = line.substr(eq + 1);
-                if (value.size() > 2 && value[0] == 's' && value[1] == '|')
+                const auto trim = [](std::string text) {
+                    const std::size_t first = text.find_first_not_of(" \t\r\n");
+                    if (first == std::string::npos) return std::string{};
+                    const std::size_t last = text.find_last_not_of(" \t\r\n");
+                    return text.substr(first, last - first + 1);
+                };
+                const std::string key = trim(line.substr(0, eq));
+                std::string value = trim(line.substr(eq + 1));
+                // Launcher config values are typed (s|, b|, i| …). The old
+                // parser stripped only strings, so b|true / b|1 made the FPS
+                // HUD appear disabled even when the launcher enabled it.
+                if (value.size() > 2 && value[1] == '|')
                     value = value.substr(2);
                 if (key == "fastforward.multiplier")
                 {
@@ -682,9 +701,19 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
                 }
                 else if (key == "display.showFps")
                 {
-                    showFps_ = (value == "true" || value == "1");
+                    // Preserve the default (on) for malformed values.  The
+                    // launcher has emitted b|true, bare true and uppercase
+                    // variants over time, and whitespace around '=' is valid
+                    // in its config writer.
+                    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                        return static_cast<char>(std::tolower(c));
+                    });
+                    if (value == "true" || value == "1" || value == "on" || value == "enabled")
+                        showFps_ = true;
+                    else if (value == "false" || value == "0" || value == "off" || value == "disabled")
+                        showFps_ = false;
                 }
-                else if (key == "dc.handle.rewind")
+                else if (key == "dc.hotkey.rewind" || key == "dc.handle.rewind")
                 {
                     rewindConfigured_ = !value.empty() && value != "none";
                 }
@@ -712,6 +741,7 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
             break;
         }
     }
+    LOG_INFO("HUD", "FPS overlay: %s", showFps_ ? "enabled" : "disabled");
 
     // GBAStation::Main is SDL-free (shared with the standalone target), so the
     // libretro path initializes the SDL subsystems it needs (audio + timer).
@@ -1250,6 +1280,11 @@ void FlycastRuntime::RenderFrame()
         LOG_INFO("FRAME", "render %u viewport complete", loggedRenderFrames);
     if (traceRender)
         LOG_INFO("FRAME", "render %u present begin", loggedRenderFrames);
+    // Request the thumbnail before EndFrame records its composite. The Vulkan
+    // backend copies this command buffer's TRANSFER_DST image into dedicated
+    // host-visible staging memory before present.
+    if (m_menuPendingThumb_)
+        GBAStationVulkan::RequestCurrentFrameCapture();
     GBAStationVulkan::EndFrame();
     if (traceRender)
     {
@@ -1321,22 +1356,9 @@ static void ScaleRgbaForThumb(const uint8_t *src, int sw, int sh, std::vector<ui
 }
 void FlycastRuntime::CaptureMenuThumbnailToMemory()
 {
-#ifdef __SWITCH__
-    // NVK/VI cannot safely re-submit a swapchain image that has already been
-    // handed to present. The old readback raced the presentation engine and
-    // poisoned the shared queue; the next overlay texture upload (typically a
-    // newly selected mask) then failed with VK_ERROR_DEVICE_LOST. State
-    // thumbnails are optional, so keep the GPU path stable until capture is
-    // implemented from a dedicated offscreen image.
-    m_thumbMemory_.clear();
-    m_thumbW_ = 0;
-    m_thumbH_ = 0;
-    LOG_INFO("CORE", "Menu thumbnail capture skipped on Switch Vulkan");
-    return;
-#endif
     std::vector<uint8_t> rgba;
     uint32_t w = 0, h = 0;
-    if (!GBAStationVulkan::CaptureCurrentFrameRGBA(rgba, w, h) || w == 0 || h == 0)
+    if (!GBAStationVulkan::ConsumeCurrentFrameCaptureRGBA(rgba, w, h) || w == 0 || h == 0)
     {
         LOG_WARN("CORE", "Menu thumbnail capture failed");
         return;
@@ -1527,6 +1549,15 @@ std::string TrimCheatValue(std::string value)
     return value;
 }
 
+std::string CheatStoragePath(const std::string &gameDbPath)
+{
+#ifdef __SWITCH__
+    if (!gameDbPath.empty() && gameDbPath.front() == '/')
+        return "sdmc:" + gameDbPath;
+#endif
+    return gameDbPath;
+}
+
 bool CheatBool(const std::string &value)
 {
     return value == "true" || value == "1" || value == "enabled";
@@ -1538,7 +1569,7 @@ void FlycastRuntime::LoadCheats()
     cheats_.clear();
     if (!core_ || cheatPath_.empty())
         return;
-    std::ifstream input(cheatPath_);
+    std::ifstream input(CheatStoragePath(cheatPath_));
     if (!input)
     {
         LOG_WARN("CHEAT", "Cannot open cheatPath: %s", cheatPath_.c_str());
@@ -1592,7 +1623,10 @@ bool FlycastRuntime::SaveCheats() const
 {
     if (cheatPath_.empty())
         return false;
-    std::ofstream output(cheatPath_, std::ios::trunc);
+    const std::string storagePath = CheatStoragePath(cheatPath_);
+    std::error_code error;
+    std::filesystem::create_directories(std::filesystem::path(storagePath).parent_path(), error);
+    std::ofstream output(storagePath, std::ios::trunc);
     if (!output)
     {
         LOG_WARN("CHEAT", "Cannot save cheats: %s", cheatPath_.c_str());
@@ -1618,6 +1652,61 @@ void FlycastRuntime::SetCheatEnabled(size_t index, bool enabled)
     core_->SetCheat(index, enabled, entry.code);
     if (SaveCheats())
         LOG_INFO("CHEAT", "%s: %s", entry.name.c_str(), enabled ? "enabled" : "disabled");
+}
+
+void FlycastRuntime::SetCheatPath(const std::string &path)
+{
+    cheatPath_ = NormalizeGameDbPath(path);
+    LoadCheats();
+    SaveFlycastDisplaySettings();
+}
+
+void FlycastRuntime::AddCheat(const std::string &name, const std::string &code)
+{
+    if (code.empty())
+        return;
+    if (cheatPath_.empty())
+    {
+        const std::string stem = GameTitleFromPath(romPath_);
+        cheatPath_ = "/GBAStation/cheats/DC/" + stem + "/" + stem + ".cht";
+    }
+    cheats_.push_back({name.empty() ? "未命名金手指" : name, code, false});
+    if (core_)
+        core_->SetCheat(cheats_.size() - 1, false, code);
+    if (SaveCheats())
+        SaveFlycastDisplaySettings();
+}
+
+void FlycastRuntime::RenameCheat(size_t index, const std::string &name)
+{
+    if (index >= cheats_.size() || name.empty())
+        return;
+    cheats_[index].name = name;
+    SaveCheats();
+}
+
+void FlycastRuntime::SetCheatCode(size_t index, const std::string &code)
+{
+    if (index >= cheats_.size() || code.empty())
+        return;
+    cheats_[index].code = code;
+    if (core_)
+        core_->SetCheat(index, cheats_[index].enabled, code);
+    SaveCheats();
+}
+
+void FlycastRuntime::DeleteCheat(size_t index)
+{
+    if (index >= cheats_.size())
+        return;
+    cheats_.erase(cheats_.begin() + static_cast<std::ptrdiff_t>(index));
+    if (core_)
+    {
+        core_->ResetCheats();
+        for (size_t i = 0; i < cheats_.size(); ++i)
+            core_->SetCheat(i, cheats_[i].enabled, cheats_[i].code);
+    }
+    SaveCheats();
 }
 
 void FlycastRuntime::LoadDiscSession()
@@ -1943,6 +2032,7 @@ void FlycastRuntime::SaveFlycastDisplaySettings()
                 item["ndsInternalResolution"] = GameDbIndexFromFlycastResolution(internalResolution);
                 item.erase("reicastInternalResolution");
                 item["savePath"] = NormalizeGameDbPath(JsonStringOr(item, "savePath", savePath_));
+                item["cheatPath"] = NormalizeGameDbPath(cheatPath_);
                 item["overlayEnabled"] = overlay_->IsMaskEnabled();
                 item["overlayPath"] = NormalizeGameDbPath(overlay_->MaskPath());
                 item["shaderEnabled"] = overlay_->IsShaderEnabled();

@@ -138,6 +138,11 @@ struct PerFrame
     // is signalled on its next use.
     std::vector<vk::Buffer> deferredUploadBuffers;
     std::vector<vk::DeviceMemory> deferredUploadMemories;
+    vk::Buffer thumbnailBuffer;
+    vk::DeviceMemory thumbnailMemory;
+    uint32_t thumbnailWidth = 0;
+    uint32_t thumbnailHeight = 0;
+    bool thumbnailPending = false;
 };
 struct OverlayTextureResource
 {
@@ -229,6 +234,8 @@ std::vector<PerFrame> s_frames;
 uint32_t            s_currentFrame = 0;   // rotating frame slot (== libretro sync_index)
 uint32_t            s_currentImage = 0;   // current swap image returned by acquire
 bool                s_frameInFlight = false;
+bool                s_thumbnailCaptureRequested = false;
+int                 s_thumbnailCaptureFrame = -1;
 bool                s_ready = false;
 bool                s_overlayReady = false;
 vk::DescriptorPool s_overlayDescriptorPool;
@@ -1574,6 +1581,8 @@ void Shutdown()
             if (buffer) s_device.destroyBuffer(buffer);
         for (vk::DeviceMemory memory : f.deferredUploadMemories)
             if (memory) s_device.freeMemory(memory);
+        if (f.thumbnailBuffer) s_device.destroyBuffer(f.thumbnailBuffer);
+        if (f.thumbnailMemory) s_device.freeMemory(f.thumbnailMemory);
         if (f.inflightFence)   s_device.destroyFence(f.inflightFence);
         if (f.acquireSemaphore) s_device.destroySemaphore(f.acquireSemaphore);
         if (f.renderSemaphore)  s_device.destroySemaphore(f.renderSemaphore);
@@ -1633,6 +1642,13 @@ bool BeginFrame()
         if (memory) s_device.freeMemory(memory);
     f.deferredUploadBuffers.clear();
     f.deferredUploadMemories.clear();
+    if (f.thumbnailBuffer) s_device.destroyBuffer(f.thumbnailBuffer);
+    if (f.thumbnailMemory) s_device.freeMemory(f.thumbnailMemory);
+    f.thumbnailBuffer = nullptr;
+    f.thumbnailMemory = nullptr;
+    f.thumbnailWidth = 0;
+    f.thumbnailHeight = 0;
+    f.thumbnailPending = false;
 
     try
     {
@@ -1733,6 +1749,7 @@ void EndFrame()
             VK_LOG_ERROR("boot frame presentKHR failed: %s", e.what());
         }
         s_frameInFlight = false;
+        s_thumbnailCaptureRequested = false;
         s_currentFrame = (s_currentFrame + 1) % static_cast<uint32_t>(s_frames.size());
         if (trace)
         {
@@ -1894,6 +1911,51 @@ void EndFrame()
             VK_LOG_INFO("EndFrame[%u] no core image; retaining full clear", tracedFrames);
     }
 
+    // The menu-opening frame has no overlay draw data. Copy the completed game
+    // composite while this command buffer still owns the swap image in
+    // TRANSFER_DST. Unlike the old post-present path, this never transitions
+    // or submits a swapchain image after VI owns it.
+    if (s_thumbnailCaptureRequested)
+    {
+        try
+        {
+            const vk::DeviceSize bytes = static_cast<vk::DeviceSize>(s_swapExtent.width) * s_swapExtent.height * 4;
+            vk::BufferCreateInfo info;
+            info.size = bytes;
+            info.usage = vk::BufferUsageFlagBits::eTransferDst;
+            info.sharingMode = vk::SharingMode::eExclusive;
+            f.thumbnailBuffer = s_device.createBuffer(info);
+            const vk::MemoryRequirements requirements = s_device.getBufferMemoryRequirements(f.thumbnailBuffer);
+            uint32_t memoryType = 0;
+            if (!FindMemoryType(requirements.memoryTypeBits,
+                                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                                memoryType))
+                throw std::runtime_error("thumbnail staging memory unavailable");
+            vk::MemoryAllocateInfo allocation(requirements.size, memoryType);
+            f.thumbnailMemory = s_device.allocateMemory(allocation);
+            s_device.bindBufferMemory(f.thumbnailBuffer, f.thumbnailMemory, 0);
+            vk::BufferImageCopy region;
+            region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+            region.imageExtent = vk::Extent3D(s_swapExtent.width, s_swapExtent.height, 1);
+            f.cmd.copyImageToBuffer(swapImage, vk::ImageLayout::eTransferDstOptimal, f.thumbnailBuffer, region);
+            f.thumbnailWidth = s_swapExtent.width;
+            f.thumbnailHeight = s_swapExtent.height;
+            f.thumbnailPending = true;
+            s_thumbnailCaptureFrame = static_cast<int>(s_currentFrame);
+        }
+        catch (const std::exception &e)
+        {
+            VK_LOG_ERROR("State thumbnail copy setup failed: %s", e.what());
+            if (f.thumbnailBuffer) s_device.destroyBuffer(f.thumbnailBuffer);
+            if (f.thumbnailMemory) s_device.freeMemory(f.thumbnailMemory);
+            f.thumbnailBuffer = nullptr;
+            f.thumbnailMemory = nullptr;
+            f.thumbnailPending = false;
+            s_thumbnailCaptureFrame = -1;
+        }
+        s_thumbnailCaptureRequested = false;
+    }
+
     if (hasOverlayDraw)
     {
         TransitionLayout(f.cmd, swapImage,
@@ -2012,6 +2074,54 @@ void EndFrame()
     {
         VK_LOG_INFO("EndFrame[%u] present complete", tracedFrames);
         ++tracedFrames;
+    }
+}
+
+void RequestCurrentFrameCapture()
+{
+    if (s_frameInFlight)
+        s_thumbnailCaptureRequested = true;
+}
+
+bool ConsumeCurrentFrameCaptureRGBA(std::vector<uint8_t>& out, uint32_t& width, uint32_t& height)
+{
+    out.clear();
+    width = height = 0;
+    if (!s_device || s_thumbnailCaptureFrame < 0 ||
+        s_thumbnailCaptureFrame >= static_cast<int>(s_frames.size()))
+        return false;
+    PerFrame &frame = s_frames[static_cast<size_t>(s_thumbnailCaptureFrame)];
+    if (!frame.thumbnailPending || !frame.thumbnailBuffer || !frame.thumbnailMemory ||
+        frame.thumbnailWidth == 0 || frame.thumbnailHeight == 0)
+        return false;
+    try
+    {
+        (void)s_device.waitForFences(frame.inflightFence, VK_TRUE, UINT64_MAX);
+        const vk::DeviceSize bytes = static_cast<vk::DeviceSize>(frame.thumbnailWidth) * frame.thumbnailHeight * 4;
+        void *mapped = s_device.mapMemory(frame.thumbnailMemory, 0, bytes);
+        out.resize(static_cast<size_t>(bytes));
+        std::memcpy(out.data(), mapped, out.size());
+        s_device.unmapMemory(frame.thumbnailMemory);
+        // The Switch swapchain format is BGRA. PNG generation consumes RGBA.
+        if (s_swapFormat == vk::Format::eB8G8R8A8Unorm)
+            for (size_t i = 0; i < out.size(); i += 4)
+                std::swap(out[i], out[i + 2]);
+        width = frame.thumbnailWidth;
+        height = frame.thumbnailHeight;
+        s_device.destroyBuffer(frame.thumbnailBuffer);
+        s_device.freeMemory(frame.thumbnailMemory);
+        frame.thumbnailBuffer = nullptr;
+        frame.thumbnailMemory = nullptr;
+        frame.thumbnailWidth = frame.thumbnailHeight = 0;
+        frame.thumbnailPending = false;
+        s_thumbnailCaptureFrame = -1;
+        VK_LOG_INFO("State thumbnail captured %ux%u from in-frame staging copy", width, height);
+        return true;
+    }
+    catch (const vk::SystemError &e)
+    {
+        VK_LOG_ERROR("State thumbnail staging read failed: %s", e.what());
+        return false;
     }
 }
 

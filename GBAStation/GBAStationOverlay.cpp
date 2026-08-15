@@ -32,6 +32,10 @@
 #include <sys/stat.h>
 #include <string>
 
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
+
 static std::string NormalizeDiscPath(const std::string &path);
 namespace { bool PickerAtRoot(const std::string &directory, const std::string &root); }
 
@@ -672,6 +676,11 @@ void GBAStationOverlay::ActivateTab(int tab)
 {
     m_quickMenuSelection = std::clamp(tab, 0, 8);
     m_settingsSelection = 0;
+    if (m_quickMenuSelection == 3)
+    {
+        m_cheatActionFocused = true;
+        m_cheatActionSelection = 0;
+    }
     m_sidebarFocused = true;
 
     switch (m_quickMenuSelection)
@@ -1570,20 +1579,99 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         if (activeTab == 3)
         {
             const std::vector<IOverlayHost::Cheat> cheats = m_host ? m_host->GetCheats() : std::vector<IOverlayHost::Cheat>();
+            const std::string cheatPath = m_host ? m_host->GetCheatPath() : std::string();
+            const int enabledCount = static_cast<int>(std::count_if(cheats.begin(), cheats.end(),
+                [](const IOverlayHost::Cheat &cheat) { return cheat.enabled; }));
+            // Two explicit actions mirror the launcher GameView workflow.  The
+            // list below is deliberately separate so Up/Down can move through
+            // a long cheat file without treating the action cards as entries.
+            const float actionH = 58.0f * scale;
+            const float actionGap = 12.0f * scale;
+            const float actionW = (contentW - actionGap) * 0.5f;
+            const float actionY = viewTop;
+            const std::string actionLabels[] = {tr("选择金手指文件"), tr("新增金手指")};
+            const int actionIcons[] = {0xE2C6, 0xE145};
+            for (int action = 0; action < 2; ++action)
+            {
+                const ImVec2 actionMin(contentX + action * (actionW + actionGap), actionY);
+                const ImVec2 actionMax(actionMin.x + actionW, actionY + actionH);
+                const bool focused = inContent && m_cheatActionFocused && m_cheatActionSelection == action;
+                dl->AddRectFilled(actionMin, actionMax, focused ? focusBg : rowBg, 7.0f * scale);
+                if (focused) DrawFocusBorder(actionMin, actionMax, 3.0f * scale);
+                else dl->AddRect(actionMin, actionMax, rowBorder, 7.0f * scale, 0, 1.0f * scale);
+                char icon[8]; EncodeUtf8(icon, actionIcons[action]);
+                dl->AddText(font, 22.0f * scale, actionMin + ImVec2(20.0f * scale, 17.0f * scale), focused ? white : cyan, icon);
+                dl->AddText(font, 19.0f * scale, actionMin + ImVec2(53.0f * scale, 19.0f * scale), focused ? white : muted,
+                            actionLabels[action].c_str());
+            }
+
+            const float summaryY = actionY + actionH + 10.0f * scale;
+            const float summaryH = 48.0f * scale;
+            const ImVec2 summaryMin(contentX, summaryY);
+            const ImVec2 summaryMax(contentX + contentW, summaryY + summaryH);
+            dl->AddRectFilled(summaryMin, summaryMax, IM_COL32(255, 255, 255, static_cast<int>(13.0f * ease)), 6.0f * scale);
+            dl->AddRect(summaryMin, summaryMax, rowBorder, 6.0f * scale, 0, 1.0f * scale);
+            const std::string fileName = cheatPath.empty() ? tr("未选择 .cht 文件（新增会自动创建）") :
+                std::filesystem::path(cheatPath).filename().string();
+            dl->AddText(font, 17.0f * scale, summaryMin + ImVec2(18.0f * scale, 15.0f * scale), muted, fileName.c_str());
+            const std::string countText = tr("已启用 ") + std::to_string(enabledCount) + " / " + std::to_string(cheats.size());
+            const ImVec2 countSize = font->CalcTextSizeA(17.0f * scale, FLT_MAX, 0.0f, countText.c_str());
+            dl->AddText(font, 17.0f * scale, ImVec2(summaryMax.x - 18.0f * scale - countSize.x, summaryMin.y + 15.0f * scale), cyan, countText.c_str());
+            const float listTop = summaryY + summaryH + 13.0f * scale;
             if (cheats.empty())
             {
                 char icon[8];
                 EncodeUtf8(icon, 0xE3AE);
-                drawRow(0, inContent, icon, tr("未配置金手指"), tr("请在 GameDB 设置 cheatPath"), false);
+                const float y = listTop;
+                const ImVec2 min(contentX, y), max(contentX + contentW, y + 64.0f * scale);
+                dl->AddRectFilled(min, max, rowBg, 6.0f * scale);
+                dl->AddRect(min, max, rowBorder, 6.0f * scale, 0, 1.0f * scale);
+                dl->AddText(font, 22.0f * scale, ImVec2(contentX + 24.0f * scale, y + 21.0f * scale), muted, icon);
+                dl->AddText(font, 19.0f * scale, ImVec2(contentX + 56.0f * scale, y + 14.0f * scale), white, tr("当前文件没有金手指").c_str());
+                dl->AddText(font, 15.0f * scale, ImVec2(contentX + 56.0f * scale, y + 37.0f * scale), muted,
+                            tr("选择 .cht 文件，或使用“新增金手指”自动创建").c_str());
             }
             else
             {
-                for (int i = 0; i < static_cast<int>(cheats.size()); ++i)
+                const int visibleRows = std::max(1, static_cast<int>((viewBottom - listTop - 28.0f * scale) / (58.0f * scale)));
+                const int first = std::clamp(m_settingsSelection - visibleRows / 2, 0,
+                                             std::max(0, static_cast<int>(cheats.size()) - visibleRows));
+                for (int i = first; i < std::min(first + visibleRows, static_cast<int>(cheats.size())); ++i)
                 {
                     char icon[8];
                     EncodeUtf8(icon, 0xE3AE);
-                    drawRow(i, inContent && m_settingsSelection == i, icon, cheats[i].name,
-                            cheats[i].enabled ? tr("开启") : tr("关闭"), false);
+                    const int row = i - first;
+                    const float y = listTop + row * (58.0f * scale);
+                    const bool focused = inContent && !m_cheatActionFocused && m_settingsSelection == i;
+                    const ImVec2 min(contentX, y), max(contentX + contentW, y + 52.0f * scale);
+                    dl->AddRectFilled(min, max, focused ? focusBg : rowBg, 6.0f * scale);
+                    if (focused) DrawFocusBorder(min, max, 3.0f * scale);
+                    else dl->AddRect(min, max, rowBorder, 6.0f * scale, 0, 1.0f * scale);
+                    dl->AddText(font, 20.0f * scale, ImVec2(contentX + 22.0f * scale, y + 17.0f * scale),
+                                focused ? white : muted, icon);
+                    dl->AddText(font, 19.0f * scale, ImVec2(contentX + 54.0f * scale, y + 16.0f * scale),
+                                focused ? white : muted, cheats[i].name.c_str());
+                    const std::string state = cheats[i].enabled ? tr("开") : tr("关");
+                    const ImVec2 stateSize = font->CalcTextSizeA(19.0f * scale, FLT_MAX, 0.0f, state.c_str());
+                    dl->AddText(font, 19.0f * scale, ImVec2(max.x - 28.0f * scale - stateSize.x, y + 16.0f * scale),
+                                cheats[i].enabled ? IM_COL32(104, 255, 145, 255) : muted, state.c_str());
+                }
+                const std::string position = std::to_string(m_settingsSelection + 1) + " / " + std::to_string(cheats.size());
+                if (!m_cheatActionFocused)
+                {
+                    char iconA[8], iconY[8], iconX[8], iconMinus[8];
+                    EncodeUtf8(iconA, 0xE0E0); EncodeUtf8(iconY, 0xE0E3); EncodeUtf8(iconX, 0xE0E2); EncodeUtf8(iconMinus, 0xE0ED);
+                    const ImU32 hint = IM_COL32(184, 204, 224, 230);
+                    const float hintY = viewBottom - 18.0f * scale;
+                    dl->AddText(font, 20.0f * scale, ImVec2(contentX, hintY - 3.0f * scale), hint, iconA);
+                    dl->AddText(font, 15.0f * scale, ImVec2(contentX + 25.0f * scale, hintY), hint, tr("开关").c_str());
+                    dl->AddText(font, 20.0f * scale, ImVec2(contentX + 118.0f * scale, hintY - 3.0f * scale), hint, iconY);
+                    dl->AddText(font, 15.0f * scale, ImVec2(contentX + 143.0f * scale, hintY), hint, tr("改名称").c_str());
+                    dl->AddText(font, 20.0f * scale, ImVec2(contentX + 265.0f * scale, hintY - 3.0f * scale), hint, iconX);
+                    dl->AddText(font, 15.0f * scale, ImVec2(contentX + 290.0f * scale, hintY), hint, tr("改代码").c_str());
+                    dl->AddText(font, 19.0f * scale, ImVec2(contentX + 405.0f * scale, hintY - 2.0f * scale), hint, iconMinus);
+                    dl->AddText(font, 15.0f * scale, ImVec2(contentX + 430.0f * scale, hintY), hint, tr("删除").c_str());
+                    dl->AddText(font, 14.0f * scale, ImVec2(contentX + contentW - 62.0f * scale, hintY), muted, position.c_str());
                 }
             }
         }
@@ -2136,9 +2224,13 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     bool leftPressed = (dirFire & Pad_Left) != 0;
     bool rightPressed = (dirFire & Pad_Right) != 0;
 
-    // Confirm = B, Back = A, disc select = Y (edge-triggered).
+    // Use the physical Switch face buttons here; the menu uses A to activate
+    // the focused control and B to return to the tab list.
     bool confirmPressed = (navPressed & HidNpadButton_A) != 0;
     bool backPressed = (navPressed & HidNpadButton_B) != 0;
+    const bool cheatRenamePressed = (navPressed & HidNpadButton_Y) != 0;
+    const bool cheatEditCodePressed = (navPressed & HidNpadButton_X) != 0;
+    const bool cheatDeletePressed = (navPressed & HidNpadButton_Minus) != 0;
 
     if (m_currentMenu == OverlayMenu::StartupDiscChoice)
     {
@@ -2205,6 +2297,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
     {
         const bool shader = m_settingsSidebar == SettingsSidebar::Shader;
         const bool shaderPicker = m_settingsSidebar == SettingsSidebar::ShaderFilePicker;
+        const bool cheatPicker = shaderPicker && m_cheatFilePickerMode;
         const bool maskPicker = m_settingsSidebar == SettingsSidebar::MaskFilePicker;
         const auto &entries = shaderPicker ? m_shaderFileEntries : m_maskFileEntries;
         const int parameterCount = shader ? static_cast<int>(m_shaderPreset.parameters.size()) : 0;
@@ -2246,6 +2339,14 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                     if (shaderPicker) { m_shaderFilePickerSelections[m_shaderFilePickerDirectory] = m_settingsSidebarSelection; ReloadShaderFilePicker(entry.path); }
                     else { m_maskFilePickerSelections[m_maskFilePickerDirectory] = m_settingsSidebarSelection; ReloadMaskFilePicker(entry.path); }
                 }
+                else if (cheatPicker)
+                {
+                    if (m_host) m_host->SetCheatPath(entry.path);
+                    m_cheatFilePickerMode = false;
+                    m_settingsSidebar = SettingsSidebar::None;
+                    m_settingsSidebarSelection = 0;
+                    m_cheatActionFocused = true;
+                }
                 else if (shaderPicker)
                 {
                     GBAStationSlang::Preset preset; std::string error;
@@ -2259,10 +2360,16 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         if (backPressed)
         {
-            if (shaderPicker && !PickerAtRoot(m_shaderFilePickerDirectory, m_shaderFilePickerRoot))
-                ReloadShaderFilePicker(std::filesystem::path(m_shaderFilePickerDirectory).parent_path().string(), m_shaderFilePickerDirectory);
-            else if (maskPicker && !PickerAtRoot(m_maskFilePickerDirectory, m_maskFilePickerRoot))
-                ReloadMaskFilePicker(std::filesystem::path(m_maskFilePickerDirectory).parent_path().string(), m_maskFilePickerDirectory);
+            // Do not recalculate a parent from an sdmc:/ path here.  libnx's
+            // filesystem normalisation may represent the root and child paths
+            // differently, which made B look like a no-op in the .cht picker.
+            // The existing "..." entry is created from the exact same path
+            // representation used for navigation, so B follows that entry.
+            if (shaderPicker && !m_shaderFileEntries.empty() && m_shaderFileEntries.front().name == "...")
+                ReloadShaderFilePicker(m_shaderFileEntries.front().path, m_shaderFilePickerDirectory);
+            else if (maskPicker && !m_maskFileEntries.empty() && m_maskFileEntries.front().name == "...")
+                ReloadMaskFilePicker(m_maskFileEntries.front().path, m_maskFilePickerDirectory);
+            else if (shaderPicker && cheatPicker) { m_cheatFilePickerMode = false; m_settingsSidebar = SettingsSidebar::None; m_settingsSidebarSelection = 0; m_cheatActionFocused = true; }
             else if (shaderPicker) { m_settingsSidebar = SettingsSidebar::Shader; m_settingsSidebarSelection = 1; }
             else if (maskPicker) { m_settingsSidebar = SettingsSidebar::Mask; m_settingsSidebarSelection = 1; }
             else CloseSettingsSidebar();
@@ -2327,6 +2434,111 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         if (backPressed)
         {
             Hide();
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
+        }
+        return true;
+    }
+
+    // Cheat management has two action buttons above a long, independently
+    // scrollable entry list.  Keep its controller model isolated from generic
+    // settings rows so A/Y/X/Minus always act on the visible cheat entry.
+    if (m_currentMenu == OverlayMenu::Settings && m_quickMenuSelection == 3)
+    {
+        const std::vector<IOverlayHost::Cheat> cheats = m_host ? m_host->GetCheats() : std::vector<IOverlayHost::Cheat>();
+        if (m_cheatActionFocused)
+        {
+            if (leftPressed || rightPressed)
+            {
+                m_cheatActionSelection = (m_cheatActionSelection + 1) % 2;
+                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
+            }
+            if (downPressed && !cheats.empty())
+            {
+                m_cheatActionFocused = false;
+                m_settingsSelection = std::clamp(m_settingsSelection, 0, static_cast<int>(cheats.size()) - 1);
+                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
+            }
+            if (confirmPressed)
+            {
+                if (m_cheatActionSelection == 0)
+                {
+                    OpenCheatFilePicker();
+                }
+                else
+                {
+                    std::string name;
+                    if (PromptCheatText(tr("输入金手指名称"), tr("未命名金手指"), name))
+                    {
+                        std::string code;
+                        if (PromptCheatText(tr("输入金手指代码"), "xxxxxxxx:xxxx", code) && m_host)
+                        {
+                            m_host->AddCheat(name, code);
+                            const auto added = m_host->GetCheats();
+                            if (!added.empty())
+                            {
+                                m_settingsSelection = static_cast<int>(added.size()) - 1;
+                                m_cheatActionFocused = false;
+                            }
+                        }
+                    }
+                }
+                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
+            }
+        }
+        else
+        {
+            if (upPressed)
+            {
+                if (m_settingsSelection <= 0)
+                    m_cheatActionFocused = true;
+                else
+                    --m_settingsSelection;
+                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
+            }
+            if (downPressed && !cheats.empty())
+            {
+                m_settingsSelection = (m_settingsSelection + 1) % static_cast<int>(cheats.size());
+                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
+            }
+            if (m_host && m_settingsSelection >= 0 && m_settingsSelection < static_cast<int>(cheats.size()))
+            {
+                const size_t index = static_cast<size_t>(m_settingsSelection);
+                if (confirmPressed)
+                {
+                    m_host->SetCheatEnabled(index, !cheats[index].enabled);
+                    GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
+                }
+                else if (cheatRenamePressed)
+                {
+                    std::string name;
+                    if (PromptCheatText(tr("修改金手指名称"), cheats[index].name, name))
+                        m_host->RenameCheat(index, name);
+                }
+                else if (cheatEditCodePressed)
+                {
+                    std::string code;
+                    if (PromptCheatText(tr("修改金手指代码"), cheats[index].code, code))
+                        m_host->SetCheatCode(index, code);
+                }
+                else if (cheatDeletePressed)
+                {
+                    m_host->DeleteCheat(index);
+                    const auto remaining = m_host->GetCheats();
+                    if (remaining.empty())
+                    {
+                        m_settingsSelection = 0;
+                        m_cheatActionFocused = true;
+                    }
+                    else
+                        m_settingsSelection = std::min(m_settingsSelection, static_cast<int>(remaining.size()) - 1);
+                    GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
+                }
+            }
+        }
+        if (backPressed)
+        {
+            m_sidebarFocused = true;
+            m_cheatActionFocused = true;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
         }
         return true;
@@ -2953,7 +3165,8 @@ void GBAStationOverlay::ReloadShaderFilePicker(const std::string &directory, con
         FileEntry item{entry.path().filename().string(), entry.path().string(), fs::is_directory(entry.path(), entryError)};
         if (entryError || item.name.empty()) continue;
         if (item.isDirectory) dirs.push_back(std::move(item));
-        else if (IsShaderPath(item.path)) files.push_back(std::move(item));
+        else if ((m_cheatFilePickerMode && std::filesystem::path(item.path).extension() == ".cht") ||
+                 (!m_cheatFilePickerMode && IsShaderPath(item.path))) files.push_back(std::move(item));
     }
     const auto byName = [](const FileEntry &a, const FileEntry &b) { return a.name < b.name; };
     std::sort(dirs.begin(), dirs.end(), byName); std::sort(files.begin(), files.end(), byName);
@@ -2975,11 +3188,66 @@ void GBAStationOverlay::OpenMaskFilePicker()
 
 void GBAStationOverlay::OpenShaderFilePicker()
 {
+    m_cheatFilePickerMode = false;
     const std::string root = PickerDirectory("sdmc:/");
     m_shaderFilePickerRoot = root;
     const std::string starting = m_shaderPath.empty() ? root : std::filesystem::path(m_shaderPath).parent_path().string();
     ReloadShaderFilePicker(starting, m_shaderPath);
     m_settingsSidebar = SettingsSidebar::ShaderFilePicker;
+}
+
+void GBAStationOverlay::OpenCheatFilePicker()
+{
+    namespace fs = std::filesystem;
+    m_cheatFilePickerMode = true;
+    // The filesystem root is / (sdmc:/ on Switch).  The cheat directory is
+    // merely the convenient initial location, not a navigation boundary.
+    const std::string root = PickerDirectory("sdmc:/");
+    const std::string defaultDirectory = PickerDirectory("sdmc:/GBAStation/cheats/DC");
+    std::error_code ec;
+    fs::create_directories(defaultDirectory, ec);
+    m_shaderFilePickerRoot = root;
+    const std::string current = m_host ? m_host->GetCheatPath() : std::string();
+    const std::string starting = current.empty() ? defaultDirectory : fs::path(current).parent_path().string();
+    ReloadShaderFilePicker(starting, current);
+    m_settingsSidebar = SettingsSidebar::ShaderFilePicker;
+}
+
+bool GBAStationOverlay::PromptCheatText(const std::string &title, const std::string &initial, std::string &result)
+{
+#ifdef __SWITCH__
+    char text[257]{};
+    // Follow the known-good FBNeo keyboard setup.  In particular, do not call
+    // any configuration or show function after swkbdCreate failed: doing so
+    // hands an uninitialised applet object to libnx and can hard-crash Horizon.
+    std::snprintf(text, sizeof(text), "%s", initial.c_str());
+    SwkbdConfig keyboard{};
+    const Result createResult = swkbdCreate(&keyboard, 0);
+    if (R_FAILED(createResult))
+    {
+        LOG_ERROR("CHEAT", "swkbdCreate failed for cheat editor: 0x%08X", createResult);
+        return false;
+    }
+    swkbdConfigMakePresetDefault(&keyboard);
+    // Keep Chinese/other system IMEs available and use the guide line exactly
+    // as FBNeo does.  Header-text mode has proved unreliable with the Vulkan
+    // external-core applet lifecycle on several Atmosphere versions.
+    swkbdConfigSetType(&keyboard, SwkbdType_All);
+    swkbdConfigSetGuideText(&keyboard, title.c_str());
+    swkbdConfigSetInitialText(&keyboard, text);
+    const Result rc = swkbdShow(&keyboard, text, sizeof(text));
+    swkbdClose(&keyboard);
+    if (R_SUCCEEDED(rc) && text[0] != '\0')
+    {
+        result = text;
+        return true;
+    }
+    if (R_FAILED(rc))
+        LOG_WARN("CHEAT", "swkbdShow cancelled/failed for cheat editor: 0x%08X", rc);
+#else
+    (void)title; (void)initial; (void)result;
+#endif
+    return false;
 }
 
 void GBAStationOverlay::OpenSettingsSidebar(bool shader)
@@ -3010,7 +3278,7 @@ void GBAStationOverlay::RenderFilePicker(ImDrawList *dl, ImVec2 displaySize, boo
     dl->AddRectFilled(ImVec2(0, 0), displaySize, IM_COL32(8, 18, 29, 244));
     dl->AddRectFilled(ImVec2(0, 0), ImVec2(displaySize.x, 84.0f * scale), IM_COL32(4, 12, 21, 252));
     dl->AddText(font, 29.0f * scale, ImVec2(margin, 30.0f * scale), IM_COL32(240, 247, 255, 255),
-                (shaderPicker ? tr("选择着色器") : tr("选择遮罩图片")).c_str());
+                (shaderPicker ? (m_cheatFilePickerMode ? tr("选择金手指文件") : tr("选择着色器")) : tr("选择遮罩图片")).c_str());
     std::string pathText = directory;
     const float pathLimit = displaySize.x - margin * 2.0f;
     while (font->CalcTextSizeA(16.0f * scale, FLT_MAX, 0.0f, pathText.c_str()).x > pathLimit && pathText.size() > 6) pathText.erase(pathText.begin());

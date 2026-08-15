@@ -88,9 +88,13 @@ void SetSlangPreset(const GBAStationSlang::Preset* preset, uint64_t version);
 ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, uint32_t height);
 void DestroyOverlayTexture(ImTextureID texture);
 
-// Capture the most recently presented swapchain image into RGBA8 host memory
-// (synchronous; blocks until the GPU finishes the copy). Returns false when
-// no frame has been presented yet or on transfer failure.
+// Request a copy from the current in-flight composite. The copy is recorded
+// before presentation and therefore never reuses a presented swapchain image.
+void RequestCurrentFrameCapture();
+// Read the dedicated staging copy after EndFrame. It may wait for the current
+// frame fence, but it only maps frontend-owned memory.
+bool ConsumeCurrentFrameCaptureRGBA(std::vector<uint8_t>& out, uint32_t& width, uint32_t& height);
+// Legacy desktop-only readback of a previously presented swapchain image.
 bool CaptureCurrentFrameRGBA(std::vector<uint8_t>& out, uint32_t& width, uint32_t& height);
 
 }  // namespace GBAStationVulkan

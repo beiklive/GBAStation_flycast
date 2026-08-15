@@ -158,6 +158,8 @@ private:
     void ReloadShaderFilePicker(const std::string &directory, const std::string &focusPath = {});
     static bool IsMaskImagePath(const std::string &path);
     static bool IsShaderPath(const std::string &path);
+    void OpenCheatFilePicker();
+    bool PromptCheatText(const std::string &title, const std::string &initial, std::string &result);
     void RenderStartupDiscChoice(ImDrawList *dl, ImVec2 displaySize);
     void RenderRAAlerts(ImDrawList *dl, ImVec2 displaySize, float deltaTime);
     void ActivateTab(int tab);
@@ -223,6 +225,9 @@ private:
     std::string m_shaderFilePickerDirectory;
     std::string m_shaderFilePickerRoot;
     std::unordered_map<std::string, int> m_shaderFilePickerSelections;
+    bool m_cheatFilePickerMode = false;
+    bool m_cheatActionFocused = true;
+    int m_cheatActionSelection = 0;
     int m_discSelection = 0;
     float m_discScrollY = 0.0f;
     float m_discTargetScrollY = 0.0f;

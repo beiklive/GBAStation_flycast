@@ -93,13 +93,21 @@ public:
 
     struct Cheat {
         std::string name;
+        // Code is kept in the .cht file, never in GameDB.  It is exposed here
+        // solely to pre-fill the edit keyboard for the focused entry.
+        std::string code;
         bool enabled = false;
     };
-    // Cheats are sourced from the current entry's cheatPath (.cht). Code text
-    // stays outside GameDB; the menu only toggles the entries already defined
-    // by that file.
+    // Cheats are sourced from the current entry's cheatPath (.cht); GameDB
+    // retains only that file path.
     virtual std::vector<Cheat> GetCheats() { return {}; }
     virtual void SetCheatEnabled(size_t, bool) {}
+    virtual std::string GetCheatPath() { return {}; }
+    virtual void SetCheatPath(const std::string &) {}
+    virtual void AddCheat(const std::string &, const std::string &) {}
+    virtual void RenameCheat(size_t, const std::string &) {}
+    virtual void SetCheatCode(size_t, const std::string &) {}
+    virtual void DeleteCheat(size_t) {}
 
     // Fast forward (toggle/hold mode + multiplier).
     virtual float GetFastForwardMultiplier() { return 2.0f; }
