@@ -709,6 +709,8 @@ bool FlycastRuntime::InitOverlay(const std::string &romPath)
     overlay_->SetHost(overlayHost_.get());
     // Prefer the launcher-supplied title; fall back to the rom filename.
     overlay_->SetGameTitle(titleArg_.empty() ? GameTitleFromPath(romPath) : titleArg_);
+    overlay_->SetGameDisplaySettings(gameDisplayMode_, gameScreenLayout_, gameInternalResolution_);
+    overlay_->SetMaskSettings(gameMaskEnabled_, gameMaskPath_);
     overlayReady_ = true;
     LOG_INFO("OVERLAY", "GBAStation overlay initialized");
     return true;
@@ -825,6 +827,8 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
             chainload_ = true;
             exitRequested_ = true;
         }
+        if (overlay_->ConsumeGameDisplaySettingsSaveRequest())
+            SaveFlycastDisplaySettings();
     }
     if (exitRequested_)
         return;
@@ -1397,6 +1401,11 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
     playTimeTotal_ = 0;
     playStatsFound_ = false;
     savePath_.clear();
+    gameDisplayMode_ = -1;
+    gameScreenLayout_.clear();
+    gameInternalResolution_.clear();
+    gameMaskEnabled_ = false;
+    gameMaskPath_.clear();
     if (romPath.empty())
         return;
 
@@ -1427,6 +1436,23 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
                 playCount_ = item.value("playCount", 0) + 1;
                 playTimeTotal_ = item.value("playTime", 0);
                 savePath_ = item.value("savePath", std::string());
+                gameDisplayMode_ = item.value("displayMode", -1);
+                gameScreenLayout_ = item.value("ndsScreenLayout", std::string());
+                if (const auto it = item.find("reicastInternalResolution");
+                    it != item.end() && it->is_string()) {
+                    gameInternalResolution_ = it->get<std::string>();
+                } else if (const auto legacy = item.find("ndsInternalResolution");
+                           legacy != item.end() && legacy->is_number_integer()) {
+                    // Older generic GameDB entries store a multiplier.  Map it
+                    // to the exact libretro option spelling instead of relying
+                    // on an unsafe JSON string conversion.
+                    static constexpr const char *kResolutionValues[] = {
+                        "320x240", "640x480", "960x720", "1280x960", "1920x1440"};
+                    const int index = std::clamp(legacy->get<int>() - 1, 0, 4);
+                    gameInternalResolution_ = kResolutionValues[index];
+                }
+                gameMaskEnabled_ = item.value("overlayEnabled", false);
+                gameMaskPath_ = item.value("overlayPath", std::string());
                 item["playCount"] = playCount_;
                 // Close the read stream first: the Switch stdio/fs layer refuses a
                 // second handle (write/trunc) on a file that is still open for read.
@@ -1444,6 +1470,48 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
         catch (...)
         {
             continue;
+        }
+    }
+}
+
+void FlycastRuntime::SaveFlycastDisplaySettings()
+{
+    if (!overlay_ || romPath_.empty())
+        return;
+    const char *dbPaths[] = {"sdmc:/GBAStation/data/GameData_DC.json", "/GBAStation/data/GameData_DC.json"};
+    const std::string normalized = NormalizeFlycastRomPath(romPath_);
+    for (const char *dbPath : dbPaths)
+    {
+        std::ifstream file(dbPath, std::ios::binary);
+        if (!file)
+            continue;
+        try
+        {
+            nlohmann::json data;
+            file >> data;
+            if (!data.is_array())
+                continue;
+            for (auto &item : data)
+            {
+                const std::string itemPath = item.value("path", std::string());
+                if (!item.is_object() || (itemPath != romPath_ && NormalizeFlycastRomPath(itemPath) != normalized))
+                    continue;
+                item["displayMode"] = overlay_->GetGameDisplayModeIndex();
+                item["ndsScreenLayout"] = overlay_->GetGameScreenLayout();
+                item["ndsIntegerScale"] = overlay_->GetGameDisplayModeIndex() == static_cast<int>(FlycastDisplayMode::Integer);
+                if (overlayHost_)
+                    item["reicastInternalResolution"] = overlayHost_->GetCoreOption("reicast_internal_resolution", "640x480");
+                item["overlayEnabled"] = overlay_->IsMaskEnabled();
+                item["overlayPath"] = overlay_->MaskPath();
+                file.close();
+                std::ofstream out(dbPath, std::ios::trunc);
+                if (out)
+                    out << data.dump(4);
+                return;
+            }
+        }
+        catch (...)
+        {
         }
     }
 }

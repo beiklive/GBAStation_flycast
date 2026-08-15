@@ -78,6 +78,14 @@ public:
 
     /// @brief Set game title for title card
     void SetGameTitle(const std::string &title) { m_gameTitle = title; }
+    void SetGameDisplaySettings(int displayMode, const std::string &screenLayout,
+                                const std::string &internalResolution);
+    void SetMaskSettings(bool enabled, const std::string &path);
+    bool IsMaskEnabled() const { return m_maskEnabled; }
+    const std::string &MaskPath() const { return m_maskPath; }
+    bool ConsumeGameDisplaySettingsSaveRequest();
+    int GetGameDisplayModeIndex() const { return static_cast<int>(m_displayMode); }
+    const char *GetGameScreenLayout() const;
 
     /// @brief Set the backend host (emulator + renderer adapter). Triggers a
     /// reload of host-backed assets (avatar texture) now that a renderer exists.
@@ -123,6 +131,7 @@ private:
     void ActivateTab(int tab);
     void EnsureRAIconLoaded();
     void ResolveNotificationTextures();
+    void ReloadMaskTexture();
     bool m_raIconLoadAttempted = false;
 
     OverlayMenu m_currentMenu = OverlayMenu::None;
@@ -145,8 +154,12 @@ private:
     std::array<SlotThumb, 10> m_slotThumbs;
     bool m_isSaveMode = true;
     int m_settingsSelection = 0;
+    bool m_gameDisplaySettingsSaveRequested = false;
     FlycastDisplayMode m_displayMode = FlycastDisplayMode::Display;
     FlycastDisplaySize m_displaySize = FlycastDisplaySize::_4_3;
+    bool m_maskEnabled = false;
+    std::string m_maskPath;
+    ImTextureID m_maskTexture = 0;
     int m_discSelection = 0;
     float m_discScrollY = 0.0f;
     float m_discTargetScrollY = 0.0f;

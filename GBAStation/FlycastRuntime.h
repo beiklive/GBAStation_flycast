@@ -54,6 +54,7 @@ private:
     void SetFastForwardMultiplier(float multiplier);
     void LoadFlycastPlayStats(const std::string &romPath);
     void SaveFlycastPlayStats(const std::string &romPath);
+    void SaveFlycastDisplaySettings();
     void SetFastForwardToggleMode(bool toggleMode);
     struct KnownDisc {
         std::string path;
@@ -105,6 +106,11 @@ private:
     int autoLoadStateSlot_ = 0;
     int autoSaveOnExitSlot_ = 0;
     std::string savePath_; // per-game save dir from the launcher GameDB (savePath field)
+    int gameDisplayMode_ = -1;
+    std::string gameScreenLayout_;
+    std::string gameInternalResolution_;
+    bool gameMaskEnabled_ = false;
+    std::string gameMaskPath_;
     std::string launchDiscPath_;
     std::string activeDiscPath_;
     std::string lastActiveDiscPath_;

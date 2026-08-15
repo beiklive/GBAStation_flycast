@@ -220,6 +220,9 @@ GBAStationOverlay::GBAStationOverlay()
 
 GBAStationOverlay::~GBAStationOverlay()
 {
+    if (m_maskTexture && m_host)
+        m_host->DestroyTexture(m_maskTexture);
+    m_maskTexture = 0;
     ReleaseAvatarTexture();
     ReleaseFocusTexture();
 }
@@ -681,6 +684,12 @@ void GBAStationOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, flo
 
     // Always render the game
     RenderGame(bgDrawList, displaySize, gameTexture, aspectRatio, frameWidth, frameHeight, fboWidth, fboHeight);
+
+    // The game itself is blitted by GBAStationVulkan.  Background ImGui draw
+    // commands run in the compositor render pass immediately after that blit,
+    // which makes the mask a true final RGBA layer.
+    if (m_maskEnabled && m_maskTexture)
+        bgDrawList->AddImage(m_maskTexture, ImVec2(0, 0), displaySize);
 
     // HUD (FPS + fast forward badge) while playing; hidden with the menu open.
     if (m_currentMenu == OverlayMenu::None)
@@ -1480,10 +1489,10 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         else if (activeTab == 4)
         {
             // 画面设置: 渲染相关 + 显示模式/比例。
-            const std::string labels[] = {tr("渲染分辨率"), tr("纹理过滤"), tr("各向异性过滤"), tr("Mip 贴图"), tr("自动跳帧"), tr("帧跳过"), tr("宽屏修正"), tr("显示模式"), tr("画面比例")};
-            const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "", ""};
-            const int rowIcons[] = {0xE333, 0xE3F4, 0xE3F4, 0xE873, 0xE8E5, 0xE8E5, 0xE3B6, 0xE8F1, 0xE3F4};
-            const int total = 9;
+            const std::string labels[] = {tr("渲染分辨率"), tr("纹理过滤"), tr("各向异性过滤"), tr("Mip 贴图"), tr("自动跳帧"), tr("帧跳过"), tr("宽屏修正"), tr("显示模式"), tr("画面比例"), tr("遮罩")};
+            const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "", "", ""};
+            const int rowIcons[] = {0xE333, 0xE3F4, 0xE3F4, 0xE873, 0xE8E5, 0xE8E5, 0xE3B6, 0xE8F1, 0xE3F4, 0xE3B6};
+            const int total = 10;
             const int visible = std::min(8, total);
             const int first = std::clamp(m_settingsSelection - visible / 2, 0, std::max(0, total - visible));
             const std::string mode = m_displayMode == FlycastDisplayMode::Integer ? tr("整数缩放") : tr("比例显示");
@@ -1504,6 +1513,12 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 else if (option == 8)
                 {
                     value = size;
+                }
+                else if (option == 9)
+                {
+                    value = m_maskEnabled ? tr("开启") : tr("关闭");
+                    if (m_maskPath.empty())
+                        value += tr("（未设置路径）");
                 }
                 else
                 {
@@ -2180,7 +2195,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            const int settingCount = m_quickMenuSelection == 4 ? 9 : (m_quickMenuSelection == 5 ? 3 : (m_quickMenuSelection == 3 ? 1 : 2));
+            const int settingCount = m_quickMenuSelection == 4 ? 10 : (m_quickMenuSelection == 5 ? 3 : (m_quickMenuSelection == 3 ? 1 : 2));
             m_settingsSelection = (m_settingsSelection + settingCount - 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
@@ -2215,7 +2230,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            const int settingCount = m_quickMenuSelection == 4 ? 9 : (m_quickMenuSelection == 5 ? 3 : (m_quickMenuSelection == 3 ? 1 : 2));
+            const int settingCount = m_quickMenuSelection == 4 ? 10 : (m_quickMenuSelection == 5 ? 3 : (m_quickMenuSelection == 3 ? 1 : 2));
             m_settingsSelection = (m_settingsSelection + 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
@@ -2267,7 +2282,10 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         {
             switch (m_settingsSelection)
             {
-            case 0: CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, direction); break;
+            case 0:
+                CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, direction);
+                m_gameDisplaySettingsSaveRequested = true;
+                break;
             case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2"}, direction); break;
             case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"off", "2", "4", "8", "16"}, direction); break;
             case 3: CycleFlycastOption(m_host, "reicast_mipmapping", {"disabled", "enabled"}, direction); break;
@@ -2286,6 +2304,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 else
                     m_displaySize = FlycastDisplaySize::_4_3;
                 ApplyScalingSettings(true);
+                m_gameDisplaySettingsSaveRequested = true;
                 break;
             }
             case 8:
@@ -2308,8 +2327,13 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                     m_displaySize = (FlycastDisplaySize)s;
                 }
                 ApplyScalingSettings(true);
+                m_gameDisplaySettingsSaveRequested = true;
                 break;
             }
+            case 9:
+                m_maskEnabled = !m_maskEnabled;
+                m_gameDisplaySettingsSaveRequested = true;
+                break;
             }
         }
         else if (m_quickMenuSelection == 5)
@@ -3471,6 +3495,81 @@ void GBAStationOverlay::ApplyScalingSettings(bool save)
     if (save)
     {
         SaveCoreSettings();
+    }
+}
+
+void GBAStationOverlay::SetGameDisplaySettings(int displayMode, const std::string &screenLayout,
+                                                const std::string &internalResolution)
+{
+    if (displayMode == static_cast<int>(FlycastDisplayMode::Integer))
+        m_displayMode = FlycastDisplayMode::Integer;
+    else if (displayMode == static_cast<int>(FlycastDisplayMode::Display))
+        m_displayMode = FlycastDisplayMode::Display;
+
+    if (screenLayout == "Stretch") m_displaySize = FlycastDisplaySize::Stretch;
+    else if (screenLayout == "4:3") m_displaySize = FlycastDisplaySize::_4_3;
+    else if (screenLayout == "16:9") m_displaySize = FlycastDisplaySize::_16_9;
+    else if (screenLayout == "Original" || screenLayout == "原比例") m_displaySize = FlycastDisplaySize::Original;
+    else if (screenLayout == "1x") m_displaySize = FlycastDisplaySize::_1x;
+    else if (screenLayout == "2x") m_displaySize = FlycastDisplaySize::_2x;
+    else if (screenLayout == "Auto") m_displaySize = FlycastDisplaySize::Auto;
+
+    if (m_displayMode == FlycastDisplayMode::Integer &&
+        static_cast<int>(m_displaySize) < static_cast<int>(FlycastDisplaySize::_1x))
+        m_displaySize = FlycastDisplaySize::Auto;
+    if (m_displayMode == FlycastDisplayMode::Display &&
+        static_cast<int>(m_displaySize) > static_cast<int>(FlycastDisplaySize::Original))
+        m_displaySize = FlycastDisplaySize::_4_3;
+
+    if (m_host && !internalResolution.empty())
+        m_host->SetCoreOption("reicast_internal_resolution", internalResolution);
+    ApplyScalingSettings(false);
+}
+
+void GBAStationOverlay::SetMaskSettings(bool enabled, const std::string &path)
+{
+    m_maskEnabled = enabled;
+    if (m_maskPath == path)
+        return;
+    m_maskPath = path;
+    ReloadMaskTexture();
+}
+
+void GBAStationOverlay::ReloadMaskTexture()
+{
+    if (m_maskTexture && m_host)
+        m_host->DestroyTexture(m_maskTexture);
+    m_maskTexture = 0;
+    if (!m_host || m_maskPath.empty())
+        return;
+    int width = 0, height = 0, channels = 0;
+    unsigned char *rgba = stbi_load(m_maskPath.c_str(), &width, &height, &channels, 4);
+    if (!rgba || width <= 0 || height <= 0) {
+        if (rgba) stbi_image_free(rgba);
+        return;
+    }
+    m_maskTexture = m_host->CreateTextureRGBA(rgba, width, height);
+    stbi_image_free(rgba);
+}
+
+bool GBAStationOverlay::ConsumeGameDisplaySettingsSaveRequest()
+{
+    const bool requested = m_gameDisplaySettingsSaveRequested;
+    m_gameDisplaySettingsSaveRequested = false;
+    return requested;
+}
+
+const char *GBAStationOverlay::GetGameScreenLayout() const
+{
+    switch (m_displaySize)
+    {
+    case FlycastDisplaySize::Stretch: return "Stretch";
+    case FlycastDisplaySize::_4_3: return "4:3";
+    case FlycastDisplaySize::_16_9: return "16:9";
+    case FlycastDisplaySize::Original: return "Original";
+    case FlycastDisplaySize::_1x: return "1x";
+    case FlycastDisplaySize::_2x: return "2x";
+    default: return "Auto";
     }
 }
 
