@@ -61,12 +61,21 @@ struct Pass {
     std::vector<uint32_t> vertexSpirv;
     std::vector<uint32_t> fragmentSpirv;
     std::vector<PushConstantMember> pushConstants;
+    // std140 UBO reflection is kept separately from push constants. Published
+    // Slang shaders do not all put SourceSize/OutputSize at the same offset.
+    std::vector<PushConstantMember> uniformMembers;
     std::vector<Sampler> samplers;
 };
 
 struct Preset {
     std::string path;
     std::vector<Pass> passes;
+    // Parameters listed by the preset are the user-facing controls.  They do
+    // not necessarily enumerate every #pragma parameter used by its passes:
+    // authors commonly omit fixed controls while relying on their declared
+    // defaults.  Keep the complete runtime set separately so omitted defaults
+    // are still uploaded to Vulkan instead of silently becoming zero.
+    std::vector<Parameter> runtimeParameters;
     std::vector<Parameter> parameters;
     // Non-fatal preset quality issues. They are logged when selected and are
     // particularly useful for hand-edited .slangp files.

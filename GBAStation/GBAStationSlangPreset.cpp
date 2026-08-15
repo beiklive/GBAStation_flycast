@@ -162,6 +162,7 @@ void TypeLayout(const std::string &type, uint32_t &alignment, uint32_t &size)
 void ReflectPass(Pass &pass)
 {
     static const std::regex pushBlock(R"(layout\s*\(\s*push_constant\s*\)\s*uniform\s+\w+\s*\{([\s\S]*?)\}\s*\w*\s*;)");
+    static const std::regex uniformBlock(R"(layout\s*\(\s*std140[^)]*\)\s*uniform\s+\w+\s*\{([\s\S]*?)\}\s*\w*\s*;)");
     static const std::regex member(R"(\b(float|int|uint|bool|vec[234]|ivec[234]|uvec[234]|mat[234])\s+(\w+)\s*(?:\[\s*(\d+)\s*\])?\s*;)");
     static const std::regex sampler(R"(layout\s*\([^)]*binding\s*=\s*(\d+)[^)]*\)\s*uniform\s+sampler\w*\s+(\w+))");
     std::smatch block;
@@ -177,6 +178,21 @@ void ReflectPass(Pass &pass)
             if (count > 1) { alignment = std::max(16u, alignment); size = AlignUp(size, alignment) * count; }
             offset = AlignUp(offset, alignment);
             pass.pushConstants.push_back({(*it)[2].str(), offset, size});
+            offset += size;
+        }
+    }
+    if (std::regex_search(pass.vertexSource, block, uniformBlock))
+    {
+        uint32_t offset = 0;
+        const std::string declarations = block[1].str();
+        for (std::sregex_iterator it(declarations.begin(), declarations.end(), member), end; it != end; ++it)
+        {
+            uint32_t alignment = 4, size = 4;
+            TypeLayout((*it)[1].str(), alignment, size);
+            const uint32_t count = (*it)[3].matched ? static_cast<uint32_t>(std::strtoul((*it)[3].str().c_str(), nullptr, 10)) : 1;
+            if (count > 1) { alignment = std::max(16u, alignment); size = AlignUp(size, alignment) * count; }
+            offset = AlignUp(offset, alignment);
+            pass.uniformMembers.push_back({(*it)[2].str(), offset, size});
             offset += size;
         }
     }
@@ -325,6 +341,24 @@ bool Load(const std::string &path, Preset &out, std::string &error)
             parameter.editable = parameter.step > 0.0f && parameter.maximum > parameter.minimum;
             out.parameters.push_back(std::move(parameter));
         }
+    }
+    // The `parameters` key is only a UI selection.  Every declared pragma is
+    // nevertheless live shader state and must receive its default (or a
+    // preset override).  A concrete example is Dot-clear.slangp: EXPOSURE is
+    // intentionally absent from its UI list but has a default of 1.0; leaving
+    // the push constant zero makes the whole first pass black.
+    out.runtimeParameters.reserve(definitions.size());
+    for (const auto& entry : definitions)
+    {
+        Parameter parameter = entry.second;
+        parameter.value = Number(values, parameter.runtimeId, parameter.initial);
+        const auto uiParameter = std::find_if(out.parameters.begin(), out.parameters.end(),
+            [&parameter](const Parameter& candidate) {
+                return candidate.runtimeId == parameter.runtimeId;
+            });
+        if (uiParameter != out.parameters.end())
+            parameter.value = uiParameter->value;
+        out.runtimeParameters.push_back(std::move(parameter));
     }
     return true;
 }

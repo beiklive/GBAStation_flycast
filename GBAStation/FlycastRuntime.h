@@ -12,6 +12,7 @@
 #include <SDL.h>
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -55,7 +56,18 @@ private:
     void LoadFlycastPlayStats(const std::string &romPath);
     void SaveFlycastPlayStats(const std::string &romPath);
     void SaveFlycastDisplaySettings();
+    void SyncFlycastDisplaySettings();
+    void SyncFlycastMaskSettings();
+    void SyncFlycastShaderSettings();
     void SetFastForwardToggleMode(bool toggleMode);
+    struct CheatEntry {
+        std::string name;
+        std::string code;
+        bool enabled = false;
+    };
+    void LoadCheats();
+    void SetCheatEnabled(size_t index, bool enabled);
+    bool SaveCheats() const;
     struct KnownDisc {
         std::string path;
         std::string label;
@@ -84,10 +96,19 @@ private:
     bool chainload_ = false;
     bool frameInFlight_ = false;
     bool fastForward_ = false;
+    bool rewindActive_ = false;
+    bool rewindConfigured_ = false;
+    bool rewindSupported_ = true;
+    int rewindCaptureDivider_ = 0;
+    std::deque<std::vector<uint8_t>> rewindStates_;
+    size_t rewindStateBytes_ = 0;
     bool fastForwardToggle_ = false;
     bool fastForwardToggleMode_ = false;
     float fastForwardMultiplier_ = 2.0f;
     bool showFps_ = false;
+    double measuredFps_ = 0.0;
+    uint64_t fpsWindowStart_ = 0;
+    unsigned fpsWindowFrames_ = 0;
     // Menu-open thumbnail state (captured before the menu renders).
     bool m_menuPendingThumb_ = false;
     std::vector<uint8_t> m_thumbMemory_;
@@ -114,6 +135,8 @@ private:
     std::string gameMaskPath_;
     bool gameShaderEnabled_ = false;
     std::string gameShaderPath_;
+    std::string cheatPath_;
+    std::vector<CheatEntry> cheats_;
     std::vector<std::string> gameShaderParamNames_;
     std::vector<float> gameShaderParamValues_;
     std::string launchDiscPath_;
@@ -124,6 +147,10 @@ private:
     std::vector<KnownDisc> knownDiscs_;
         uint32_t lastTicks_ = 0;
     float overlayBaseFontScale_ = 1.0f;
+
+    void UpdateMeasuredFps(unsigned emulatedFrames);
+    void CaptureRewindState();
+    bool StepRewind();
 };
 
 }  // namespace GBAStation

@@ -226,7 +226,10 @@ GBAStationOverlay::~GBAStationOverlay()
 {
     if (m_maskTexture && m_host)
         m_host->DestroyTexture(m_maskTexture);
+    if (m_pendingMaskTexture && m_host)
+        m_host->DestroyTexture(m_pendingMaskTexture);
     m_maskTexture = 0;
+    m_pendingMaskTexture = 0;
     ReleaseAvatarTexture();
     ReleaseFocusTexture();
 }
@@ -594,6 +597,23 @@ void GBAStationOverlay::Update(float deltaTime)
     // Pre-load RA icon texture BEFORE rendering (GL-safe: outside ImGui frame)
     EnsureRAIconLoaded();
 
+    // A descriptor is returned before the queued Vulkan upload reaches the
+    // GPU. Keep drawing the old mask for one complete frame, then atomically
+    // replace it. This prevents a partially uploaded right/bottom edge from
+    // exposing the black game border.
+    if (m_pendingMaskTexture)
+    {
+        if (m_pendingMaskTextureFrames > 0)
+            --m_pendingMaskTextureFrames;
+        else
+        {
+            if (m_maskTexture && m_host)
+                m_host->DestroyTexture(m_maskTexture);
+            m_maskTexture = m_pendingMaskTexture;
+            m_pendingMaskTexture = 0;
+        }
+    }
+
     // Resolve any pending notification badge textures from cache (no GL calls)
     ResolveNotificationTextures();
 
@@ -689,11 +709,13 @@ void GBAStationOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, flo
     // Always render the game
     RenderGame(bgDrawList, displaySize, gameTexture, aspectRatio, frameWidth, frameHeight, fboWidth, fboHeight);
 
-    // The game itself is blitted by GBAStationVulkan.  Background ImGui draw
-    // commands run in the compositor render pass immediately after that blit,
-    // which makes the mask a true final RGBA layer.
+    // Keep the mask full screen (including the bezel / letterbox area), but
+    // record it into the foreground list. The Vulkan compositor consumes that
+    // list after the game blit in the final swapchain pass; the background
+    // list can be submitted before the game's letterbox clear on switchVK.
+    // HUD and all menus are appended afterwards and remain above the mask.
     if (m_maskEnabled && m_maskTexture)
-        bgDrawList->AddImage(m_maskTexture, ImVec2(0, 0), displaySize);
+        fgDrawList->AddImage(m_maskTexture, ImVec2(0, 0), displaySize);
 
     // HUD (FPS + fast forward badge) while playing; hidden with the menu open.
     if (m_currentMenu == OverlayMenu::None)
@@ -710,10 +732,33 @@ void GBAStationOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, flo
         // legend.  Do not paint the generic menu legend over that footer.
         if (m_settingsSidebar == SettingsSidebar::None)
             RenderHelpersBar(fgDrawList, displaySize);
+        if (m_syncConfirm != SyncConfirm::None)
+            RenderSyncConfirmDialog(fgDrawList, displaySize);
     }
 
     // RA alerts always render (even during gameplay, not just when menu is open)
     RenderRAAlerts(fgDrawList, displaySize, ImGui::GetIO().DeltaTime);
+}
+
+bool GBAStationOverlay::ConsumeSyncDisplaySettingsRequest()
+{
+    const bool requested = m_syncDisplaySettingsRequested;
+    m_syncDisplaySettingsRequested = false;
+    return requested;
+}
+
+bool GBAStationOverlay::ConsumeSyncMaskSettingsRequest()
+{
+    const bool requested = m_syncMaskSettingsRequested;
+    m_syncMaskSettingsRequested = false;
+    return requested;
+}
+
+bool GBAStationOverlay::ConsumeSyncShaderSettingsRequest()
+{
+    const bool requested = m_syncShaderSettingsRequested;
+    m_syncShaderSettingsRequested = false;
+    return requested;
 }
 
 void GBAStationOverlay::DrawHud(ImDrawList *dl, ImVec2 displaySize)
@@ -722,41 +767,46 @@ void GBAStationOverlay::DrawHud(ImDrawList *dl, ImVec2 displaySize)
         return;
     const bool showFps = m_host && m_host->GetShowFps();
     const bool fastForward = m_host && m_host->GetFastForwardActive();
-    if (!showFps && !fastForward)
+    const bool rewind = m_host && m_host->GetRewindActive();
+    if (!showFps && !fastForward && !rewind)
         return;
 
-    const float em = std::max(14.0f, std::round(displaySize.y / 32.0f));
+    // Match FBNeo's compact independent badges. They remain readable without
+    // competing with the game or using the much larger menu font scale.
+    const float em = std::max(7.0f, std::round(displaySize.y / 64.0f));
     const float margin = std::round(em * 0.6f);
     const float pad = std::round(em * 0.35f);
     const float fontScale = em / 21.0f;
-
-    std::string text;
-    if (showFps)
-    {
-        char buf[24];
-        const double fps = m_host ? m_host->GetCoreFps() : 0.0;
-        std::snprintf(buf, sizeof(buf), "FPS: %.1f", fps);
-        text = buf;
-    }
-    if (fastForward)
-    {
-        if (!text.empty())
-            text += "   ";
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "%dx>>", static_cast<int>(m_host ? m_host->GetFastForwardMultiplier() : 2.0f));
-        text += buf;
-    }
-
     ImFont *font = ImGui::GetFont();
     if (!font)
         return;
     const float baseFontSize = ImGui::GetFontSize();
-    const ImVec2 textSize = font->CalcTextSizeA(baseFontSize * fontScale, FLT_MAX, 0.0f, text.c_str());
-    const ImVec2 min(margin, margin);
-    const ImVec2 max(margin + textSize.x + pad * 2.0f, margin + textSize.y + pad * 2.0f);
-    dl->AddRectFilled(min, max, IM_COL32(0, 0, 0, 140), std::round(em * 0.25f));
-    dl->AddText(font, baseFontSize * fontScale, ImVec2(min.x + pad, min.y + pad),
-                IM_COL32(135, 255, 135, 255), text.c_str());
+
+    float x = margin;
+    const auto drawBadge = [&](const std::string &text, ImU32 color) {
+        const ImVec2 textSize = font->CalcTextSizeA(baseFontSize * fontScale, FLT_MAX, 0.0f, text.c_str());
+        const ImVec2 min(x, margin);
+        const ImVec2 max(x + textSize.x + pad * 2.0f, margin + textSize.y + pad * 2.0f);
+        dl->AddRectFilled(min, max, IM_COL32(0, 0, 0, 158), std::round(em * 0.25f));
+        dl->AddRect(min, max, color, std::round(em * 0.25f), 0, 1.0f);
+        dl->AddText(font, baseFontSize * fontScale, ImVec2(min.x + pad, min.y + pad), color, text.c_str());
+        x = max.x + pad;
+    };
+    if (showFps)
+    {
+        char buf[24];
+        const double fps = m_host ? m_host->GetMeasuredFps() : 0.0;
+        std::snprintf(buf, sizeof(buf), "FPS: %.1f", fps);
+        drawBadge(buf, IM_COL32(104, 255, 145, 255));
+    }
+    if (fastForward)
+    {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%dx >>", static_cast<int>(m_host ? m_host->GetFastForwardMultiplier() : 2.0f));
+        drawBadge(buf, IM_COL32(100, 183, 255, 255));
+    }
+    if (rewind)
+        drawBadge("<< REW", IM_COL32(130, 188, 255, 255));
 }
 
 void GBAStationOverlay::RenderSocialArea(ImDrawList *dl, ImVec2 displaySize)
@@ -857,10 +907,17 @@ void GBAStationOverlay::GetGameViewport(float screenW, float screenH, float core
         }
         dstWidth = (float)(DC_BASE_W * scale);
         dstHeight = (float)(DC_BASE_H * scale);
-        if (dstWidth > screenW)
-            dstWidth = screenW;
-        if (dstHeight > screenH)
-            dstHeight = screenH;
+        const float targetAspect = m_integerWideAspect ? (16.0f / 9.0f) : (4.0f / 3.0f);
+        if (dstWidth / dstHeight > targetAspect)
+            dstWidth = dstHeight * targetAspect;
+        else
+            dstHeight = dstWidth / targetAspect;
+        const float fit = std::min(screenW / dstWidth, screenH / dstHeight);
+        if (fit < 1.0f)
+        {
+            dstWidth *= fit;
+            dstHeight *= fit;
+        }
     }
     else
     {
@@ -941,12 +998,17 @@ void GBAStationOverlay::RenderGame(ImDrawList *dl, ImVec2 displaySize, unsigned 
 
         dstWidth = DC_BASE_W * scale;
         dstHeight = DC_BASE_H * scale;
-
-        // Clamp to screen
-        if (dstWidth > displaySize.x)
-            dstWidth = displaySize.x;
-        if (dstHeight > displaySize.y)
-            dstHeight = displaySize.y;
+        const float targetAspect = m_integerWideAspect ? (16.0f / 9.0f) : (4.0f / 3.0f);
+        if (dstWidth / dstHeight > targetAspect)
+            dstWidth = dstHeight * targetAspect;
+        else
+            dstHeight = dstWidth / targetAspect;
+        const float fit = std::min(displaySize.x / dstWidth, displaySize.y / dstHeight);
+        if (fit < 1.0f)
+        {
+            dstWidth *= fit;
+            dstHeight *= fit;
+        }
     }
     else
     {
@@ -1507,11 +1569,23 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     {
         if (activeTab == 3)
         {
-            const std::string enabled = m_host && m_host->GetCoreOption("reicast_widescreen_cheats", "disabled") == "enabled"
-                                            ? tr("开启") : tr("关闭");
-            char icon[8];
-            EncodeUtf8(icon, 0xE3AE);
-            drawRow(0, inContent && m_settingsSelection == 0, icon, tr("宽屏金手指"), enabled, false);
+            const std::vector<IOverlayHost::Cheat> cheats = m_host ? m_host->GetCheats() : std::vector<IOverlayHost::Cheat>();
+            if (cheats.empty())
+            {
+                char icon[8];
+                EncodeUtf8(icon, 0xE3AE);
+                drawRow(0, inContent, icon, tr("未配置金手指"), tr("请在 GameDB 设置 cheatPath"), false);
+            }
+            else
+            {
+                for (int i = 0; i < static_cast<int>(cheats.size()); ++i)
+                {
+                    char icon[8];
+                    EncodeUtf8(icon, 0xE3AE);
+                    drawRow(i, inContent && m_settingsSelection == i, icon, cheats[i].name,
+                            cheats[i].enabled ? tr("开启") : tr("关闭"), false);
+                }
+            }
         }
         else if (activeTab == 4)
         {
@@ -1535,7 +1609,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                 std::string value;
                 if (option == 0) value = m_host ? m_host->GetCoreOption("reicast_internal_resolution", "640x480") : "640x480";
                 else if (option == 1) value = m_displayMode == FlycastDisplayMode::Integer ? tr("整数倍缩放") : tr("适应屏幕");
-                else if (option == 2) value = m_displaySize == FlycastDisplaySize::_16_9 ? "16:9" : "4:3";
+                else if (option == 2) value = (m_displayMode == FlycastDisplayMode::Integer ? m_integerWideAspect : m_displaySize == FlycastDisplaySize::_16_9) ? "16:9" : "4:3";
                 else if (option == 3) value = std::to_string(std::clamp(static_cast<int>(m_displaySize) - 3, 1, 5)) + "x";
                 else if (option == 4 || option == 5) value = ">";
                 else value = tr("同步当前设置");
@@ -1546,9 +1620,9 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         }
         else if (activeTab == 5)
         {
-            constexpr int totalRows = 6;
+            constexpr int totalRows = 7;
             const int first = 0;
-            const std::string labels[] = {tr("快进倍率"), tr("快进模式"), tr("自动跳帧"), tr("帧跳过")};
+            const std::string labels[] = {tr("快进倍率"), tr("快进模式"), tr("宽屏补丁"), tr("自动跳帧"), tr("帧跳过")};
             for (int sourceRow = first; sourceRow < first + totalRows; ++sourceRow)
             {
                 const int row = sourceRow - first;
@@ -1567,11 +1641,13 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
                     value = m_host && m_host->GetFastForwardToggleMode() ? tr("切换") : tr("按住");
                 }
                 else if (option == 2)
+                    value = m_host && m_host->GetCoreOption("reicast_widescreen_cheats", "disabled") == "enabled" ? tr("开启") : tr("关闭");
+                else if (option == 3)
                     value = m_host ? m_host->GetCoreOption("reicast_auto_skip_frame", tr("自动")) : tr("自动");
                 else
                     value = m_host ? m_host->GetCoreOption("reicast_frame_skipping", "disabled") : "disabled";
                 char icon[8];
-                EncodeUtf8(icon, option < 2 ? 0xE8B2 : 0xE8E5);
+                EncodeUtf8(icon, option < 2 ? 0xE8B2 : (option == 2 ? 0xE3AE : 0xE8E5));
                 drawRow(row, inContent && option == m_settingsSelection, icon, labels[option], value,
                         true);
             }
@@ -2100,6 +2176,29 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         return true;
     }
 
+    // A sync affects every other Dreamcast entry, so it must be an explicit
+    // modal confirmation and consume input before the underlying settings page.
+    if (m_syncConfirm != SyncConfirm::None)
+    {
+        if (confirmPressed)
+        {
+            if (m_syncConfirm == SyncConfirm::Display)
+                m_syncDisplaySettingsRequested = true;
+            else if (m_syncConfirm == SyncConfirm::Shader)
+                m_syncShaderSettingsRequested = true;
+            else
+                m_syncMaskSettingsRequested = true;
+            m_syncConfirm = SyncConfirm::None;
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
+        }
+        else if (backPressed)
+        {
+            m_syncConfirm = SyncConfirm::None;
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
+        }
+        return true;
+    }
+
     // FBNeo-style settings sidebar has its own focus model.  File browsing is
     // a child page; selecting a file always returns to the relevant sidebar.
     if (m_settingsSidebar != SettingsSidebar::None)
@@ -2275,7 +2374,8 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            const int settingCount = m_quickMenuSelection == 4 ? 9 : (m_quickMenuSelection == 5 ? 4 : (m_quickMenuSelection == 3 ? 1 : 2));
+            const int cheatCount = m_host ? static_cast<int>(m_host->GetCheats().size()) : 0;
+            const int settingCount = m_quickMenuSelection == 4 ? 9 : (m_quickMenuSelection == 5 ? 5 : (m_quickMenuSelection == 3 ? std::max(1, cheatCount) : 2));
             m_settingsSelection = (m_settingsSelection + settingCount - 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
@@ -2356,14 +2456,16 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         if (m_quickMenuSelection == 3)
         {
-            CycleFlycastOption(m_host, "reicast_widescreen_cheats", {"disabled", "enabled"}, direction);
+            const std::vector<IOverlayHost::Cheat> cheats = m_host ? m_host->GetCheats() : std::vector<IOverlayHost::Cheat>();
+            if (m_host && m_settingsSelection >= 0 && m_settingsSelection < static_cast<int>(cheats.size()))
+                m_host->SetCheatEnabled(static_cast<size_t>(m_settingsSelection), !cheats[m_settingsSelection].enabled);
         }
         else if (m_quickMenuSelection == 4)
         {
             switch (m_settingsSelection)
             {
             case 0:
-                CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, direction);
+                CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960"}, direction);
                 m_gameDisplaySettingsSaveRequested = true;
                 break;
             case 1:
@@ -2382,7 +2484,9 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             }
             case 2:
             {
-                if (m_displayMode == FlycastDisplayMode::Display)
+                if (m_displayMode == FlycastDisplayMode::Integer)
+                    m_integerWideAspect = !m_integerWideAspect;
+                else
                     m_displaySize = m_displaySize == FlycastDisplaySize::_4_3 ? FlycastDisplaySize::_16_9 : FlycastDisplaySize::_4_3;
                 ApplyScalingSettings(true);
                 m_gameDisplaySettingsSaveRequested = true;
@@ -2423,8 +2527,9 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 if (m_host)
                     m_host->SetFastForwardToggleMode(!m_host->GetFastForwardToggleMode());
                 break;
-            case 2: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, direction); break;
-            case 3: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, direction); break;
+            case 2: CycleFlycastOption(m_host, "reicast_widescreen_cheats", {"disabled", "enabled"}, direction); break;
+            case 3: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, direction); break;
+            case 4: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, direction); break;
             }
         }
         else if (m_settingsSelection == 0)
@@ -2440,6 +2545,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             else
                 m_displaySize = FlycastDisplaySize::_4_3;
             ApplyScalingSettings(true);
+            m_gameDisplaySettingsSaveRequested = true;
         }
         else if (m_settingsSelection == 1)
         {
@@ -2467,6 +2573,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 m_displaySize = (FlycastDisplaySize)s;
             }
             ApplyScalingSettings(true);
+            m_gameDisplaySettingsSaveRequested = true;
         }
     }
 
@@ -2542,19 +2649,26 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         {
             if (m_quickMenuSelection == 3)
             {
-                CycleFlycastOption(m_host, "reicast_widescreen_cheats", {"disabled", "enabled"}, 1);
+                const std::vector<IOverlayHost::Cheat> cheats = m_host ? m_host->GetCheats() : std::vector<IOverlayHost::Cheat>();
+                if (m_host && m_settingsSelection >= 0 && m_settingsSelection < static_cast<int>(cheats.size()))
+                    m_host->SetCheatEnabled(static_cast<size_t>(m_settingsSelection), !cheats[m_settingsSelection].enabled);
             }
             else if (m_quickMenuSelection == 4)
             {
                 switch (m_settingsSelection)
                 {
-                case 0: CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, 1); break;
+                case 0:
+                    CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960"}, 1);
+                    m_gameDisplaySettingsSaveRequested = true;
+                    break;
                 case 1:
                     m_displayMode = m_displayMode == FlycastDisplayMode::Display ? FlycastDisplayMode::Integer : FlycastDisplayMode::Display;
                     m_displaySize = m_displayMode == FlycastDisplayMode::Integer ? FlycastDisplaySize::_1x : FlycastDisplaySize::_4_3;
                     ApplyScalingSettings(true); m_gameDisplaySettingsSaveRequested = true; break;
                 case 2:
-                    if (m_displayMode == FlycastDisplayMode::Display) { m_displaySize = m_displaySize == FlycastDisplaySize::_4_3 ? FlycastDisplaySize::_16_9 : FlycastDisplaySize::_4_3; ApplyScalingSettings(true); m_gameDisplaySettingsSaveRequested = true; }
+                    if (m_displayMode == FlycastDisplayMode::Integer) m_integerWideAspect = !m_integerWideAspect;
+                    else m_displaySize = m_displaySize == FlycastDisplaySize::_4_3 ? FlycastDisplaySize::_16_9 : FlycastDisplaySize::_4_3;
+                    ApplyScalingSettings(true); m_gameDisplaySettingsSaveRequested = true;
                     break;
                 case 3:
                     if (m_displayMode == FlycastDisplayMode::Integer) { int scale = std::clamp(static_cast<int>(m_displaySize) - 3, 1, 5); m_displaySize = static_cast<FlycastDisplaySize>((scale % 5) + 4); ApplyScalingSettings(true); m_gameDisplaySettingsSaveRequested = true; }
@@ -2564,6 +2678,15 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                     return true;
                 case 5:
                     OpenSettingsSidebar(true);
+                    return true;
+                case 6:
+                    m_syncConfirm = SyncConfirm::Display;
+                    return true;
+                case 7:
+                    m_syncConfirm = SyncConfirm::Mask;
+                    return true;
+                case 8:
+                    m_syncConfirm = SyncConfirm::Shader;
                     return true;
                 }
             }
@@ -2589,8 +2712,9 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                     if (m_host)
                         m_host->SetFastForwardToggleMode(!m_host->GetFastForwardToggleMode());
                     break;
-                case 2: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, 1); break;
-                case 3: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, 1); break;
+                case 2: CycleFlycastOption(m_host, "reicast_widescreen_cheats", {"disabled", "enabled"}, 1); break;
+                case 3: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, 1); break;
+                case 4: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, 1); break;
                 }
             }
             // Confirm acts like Right.
@@ -2605,6 +2729,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 else
                     m_displaySize = FlycastDisplaySize::_4_3;
                 ApplyScalingSettings(true);
+                m_gameDisplaySettingsSaveRequested = true;
             }
             else if (m_settingsSelection == 1)
             {
@@ -2621,6 +2746,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                     m_displaySize = (FlycastDisplaySize)s;
                 }
                 ApplyScalingSettings(true);
+                m_gameDisplaySettingsSaveRequested = true;
             }
         }
         else if (m_currentMenu == OverlayMenu::DiscSelect)
@@ -2913,6 +3039,34 @@ void GBAStationOverlay::RenderFilePicker(ImDrawList *dl, ImVec2 displaySize, boo
     dl->AddText(font, 18.0f * scale, ImVec2(displaySize.x - 217.0f * scale, footerY - 9.0f * scale), hint, tr("上一级").c_str());
     dl->AddText(font, 26.0f * scale, ImVec2(displaySize.x - 105.0f * scale, footerY - 14.0f * scale), hint, iconA);
     dl->AddText(font, 18.0f * scale, ImVec2(displaySize.x - 77.0f * scale, footerY - 9.0f * scale), hint, tr("选择").c_str());
+}
+
+void GBAStationOverlay::RenderSyncConfirmDialog(ImDrawList *dl, ImVec2 displaySize)
+{
+    ImFont *font = ImGui::GetFont();
+    if (!font)
+        return;
+    const float scale = OverlayScale();
+    const std::string type = m_syncConfirm == SyncConfirm::Display ? tr("画面设置") :
+                             m_syncConfirm == SyncConfirm::Shader ? tr("着色器设置") : tr("遮罩设置");
+    const std::string prompt = tr("确定将当前") + type + tr("同步到其它游戏？");
+    const ImVec2 size(560.0f * scale, 174.0f * scale);
+    const ImVec2 min((displaySize.x - size.x) * 0.5f, (displaySize.y - size.y) * 0.5f);
+    const ImVec2 max(min.x + size.x, min.y + size.y);
+    dl->AddRectFilled(ImVec2(0, 0), displaySize, IM_COL32(0, 0, 0, 135));
+    dl->AddRectFilled(min, max, IM_COL32(12, 29, 44, 250), 10.0f * scale);
+    dl->AddRect(min, max, IM_COL32(112, 204, 255, 235), 10.0f * scale, 0, 2.0f * scale);
+    const float promptSize = 23.0f * scale;
+    const ImVec2 textSize = font->CalcTextSizeA(promptSize, FLT_MAX, 0.0f, prompt.c_str());
+    dl->AddText(font, promptSize, ImVec2(min.x + (size.x - textSize.x) * 0.5f, min.y + 39.0f * scale),
+                IM_COL32(244, 249, 255, 255), prompt.c_str());
+    char iconA[8], iconB[8];
+    EncodeUtf8(iconA, 0xE0E0); EncodeUtf8(iconB, 0xE0E1);
+    const ImU32 hint = IM_COL32(184, 216, 240, 255);
+    dl->AddText(font, 25.0f * scale, ImVec2(min.x + 105.0f * scale, min.y + 113.0f * scale), hint, iconA);
+    dl->AddText(font, 18.0f * scale, ImVec2(min.x + 134.0f * scale, min.y + 118.0f * scale), hint, tr("确认同步").c_str());
+    dl->AddText(font, 25.0f * scale, ImVec2(min.x + 325.0f * scale, min.y + 113.0f * scale), hint, iconB);
+    dl->AddText(font, 18.0f * scale, ImVec2(min.x + 354.0f * scale, min.y + 118.0f * scale), hint, tr("取消").c_str());
 }
 
 void GBAStationOverlay::RenderSettingsSidebar(ImDrawList *dl, ImVec2 displaySize)
@@ -3807,6 +3961,9 @@ void GBAStationOverlay::SetGameDisplaySettings(int displayMode, const std::strin
     else if (displayMode == static_cast<int>(FlycastDisplayMode::Display))
         m_displayMode = FlycastDisplayMode::Display;
 
+    if (screenLayout == "16:9") m_integerWideAspect = true;
+    else if (screenLayout == "4:3") m_integerWideAspect = false;
+
     if (screenLayout == "Stretch") m_displaySize = FlycastDisplaySize::Stretch;
     else if (screenLayout == "4:3") m_displaySize = FlycastDisplaySize::_4_3;
     else if (screenLayout == "16:9") m_displaySize = FlycastDisplaySize::_16_9;
@@ -3818,8 +3975,7 @@ void GBAStationOverlay::SetGameDisplaySettings(int displayMode, const std::strin
     else if (screenLayout == "5x") m_displaySize = FlycastDisplaySize::_5x;
     else if (screenLayout == "Auto") m_displaySize = FlycastDisplaySize::Auto;
 
-    if (m_displayMode == FlycastDisplayMode::Integer && integerScale >= 1 && integerScale <= 5 &&
-        (screenLayout.empty() || screenLayout == "4:3" || screenLayout == "Auto"))
+    if (m_displayMode == FlycastDisplayMode::Integer && integerScale >= 1 && integerScale <= 5)
         m_displaySize = static_cast<FlycastDisplaySize>(integerScale + 3);
 
     if (m_displayMode == FlycastDisplayMode::Integer &&
@@ -3853,6 +4009,7 @@ void GBAStationOverlay::SetShaderSettings(bool enabled, const std::string &path,
     m_shaderPath = path;
     m_shaderPreset = {};
     m_shaderPresetValid = false;
+    ++m_shaderPresetVersion;
     if (!enabled || path.empty())
         return;
 
@@ -3878,22 +4035,29 @@ void GBAStationOverlay::SetShaderPreset(bool enabled, GBAStationSlang::Preset pr
     m_shaderPath = preset.path;
     m_shaderPreset = std::move(preset);
     m_shaderPresetValid = enabled && !m_shaderPreset.passes.empty();
+    ++m_shaderPresetVersion;
 }
 
 void GBAStationOverlay::ReloadMaskTexture()
 {
-    if (m_maskTexture && m_host)
-        m_host->DestroyTexture(m_maskTexture);
-    m_maskTexture = 0;
+    if (m_pendingMaskTexture && m_host)
+        m_host->DestroyTexture(m_pendingMaskTexture);
+    m_pendingMaskTexture = 0;
     if (!m_host || m_maskPath.empty())
+    {
+        if (m_maskTexture && m_host)
+            m_host->DestroyTexture(m_maskTexture);
+        m_maskTexture = 0;
         return;
+    }
     int width = 0, height = 0, channels = 0;
     unsigned char *rgba = stbi_load(m_maskPath.c_str(), &width, &height, &channels, 4);
     if (!rgba || width <= 0 || height <= 0) {
         if (rgba) stbi_image_free(rgba);
         return;
     }
-    m_maskTexture = m_host->CreateTextureRGBA(rgba, width, height);
+    m_pendingMaskTexture = m_host->CreateTextureRGBA(rgba, width, height);
+    m_pendingMaskTextureFrames = m_pendingMaskTexture ? 1 : 0;
     stbi_image_free(rgba);
 }
 
@@ -3906,6 +4070,8 @@ bool GBAStationOverlay::ConsumeGameDisplaySettingsSaveRequest()
 
 const char *GBAStationOverlay::GetGameScreenLayout() const
 {
+    if (m_displayMode == FlycastDisplayMode::Integer)
+        return m_integerWideAspect ? "16:9" : "4:3";
     switch (m_displaySize)
     {
     case FlycastDisplaySize::Stretch: return "Stretch";

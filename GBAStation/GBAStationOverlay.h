@@ -98,9 +98,13 @@ public:
     bool IsShaderEnabled() const { return m_shaderEnabled; }
     const std::string &ShaderPath() const { return m_shaderPath; }
     const GBAStationSlang::Preset *ShaderPreset() const { return m_shaderPresetValid ? &m_shaderPreset : nullptr; }
+    uint64_t ShaderPresetVersion() const { return m_shaderPresetVersion; }
     const std::vector<GBAStationSlang::Parameter> &ShaderParameters() const { return m_shaderPreset.parameters; }
     int GetGameIntegerScale() const;
     bool ConsumeGameDisplaySettingsSaveRequest();
+    bool ConsumeSyncDisplaySettingsRequest();
+    bool ConsumeSyncMaskSettingsRequest();
+    bool ConsumeSyncShaderSettingsRequest();
     int GetGameDisplayModeIndex() const { return static_cast<int>(m_displayMode); }
     const char *GetGameScreenLayout() const;
 
@@ -144,6 +148,7 @@ private:
     void RefreshDiscBrowser();
     void RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize);
     void RenderSettingsSidebar(ImDrawList *dl, ImVec2 displaySize);
+    void RenderSyncConfirmDialog(ImDrawList *dl, ImVec2 displaySize);
     void RenderFilePicker(ImDrawList *dl, ImVec2 displaySize, bool shaderPicker);
     void OpenSettingsSidebar(bool shader);
     void CloseSettingsSidebar();
@@ -182,15 +187,26 @@ private:
     bool m_isSaveMode = true;
     int m_settingsSelection = 0;
     bool m_gameDisplaySettingsSaveRequested = false;
+    bool m_syncDisplaySettingsRequested = false;
+    bool m_syncMaskSettingsRequested = false;
+    bool m_syncShaderSettingsRequested = false;
+    enum class SyncConfirm { None, Display, Shader, Mask };
+    SyncConfirm m_syncConfirm = SyncConfirm::None;
     FlycastDisplayMode m_displayMode = FlycastDisplayMode::Display;
     FlycastDisplaySize m_displaySize = FlycastDisplaySize::_4_3;
+    // Integer multiplier and output aspect are independent settings. Keeping
+    // them separate avoids using the aspect enum value as a scale factor.
+    bool m_integerWideAspect = false; // false=4:3, true=16:9
     bool m_maskEnabled = false;
     std::string m_maskPath;
     ImTextureID m_maskTexture = 0;
+    ImTextureID m_pendingMaskTexture = 0;
+    int m_pendingMaskTextureFrames = 0;
     bool m_shaderEnabled = false;
     std::string m_shaderPath;
     GBAStationSlang::Preset m_shaderPreset;
     bool m_shaderPresetValid = false;
+    uint64_t m_shaderPresetVersion = 0;
     enum class SettingsSidebar { None, Shader, ShaderFilePicker, Mask, MaskFilePicker };
     SettingsSidebar m_settingsSidebar = SettingsSidebar::None;
     int m_settingsSidebarSelection = 0;

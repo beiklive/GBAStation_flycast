@@ -1495,6 +1495,48 @@ std::string GBAStationCore::GetConfigValue(const std::string &key, const std::st
     return defaultVal;
 }
 
+bool GBAStationCore::SerializeState(std::vector<uint8_t> &data)
+{
+    data.clear();
+    if (!m_gameLoaded)
+        return false;
+    const size_t size = retro_serialize_size();
+    if (size == 0)
+        return false;
+    data.resize(size);
+    if (!retro_serialize(data.data(), data.size()))
+    {
+        data.clear();
+        return false;
+    }
+    return true;
+}
+
+bool GBAStationCore::DeserializeState(const std::vector<uint8_t> &data)
+{
+    if (!m_gameLoaded || data.empty())
+        return false;
+
+    // The core may leave queued audio from the timeline we are leaving. Flush
+    // it before restoring an older frame, just like normal state loading.
+    retro_audio_flush_buffer();
+    if (m_audioFlushCallback)
+        m_audioFlushCallback();
+    return retro_unserialize(data.data(), data.size());
+}
+
+void GBAStationCore::ResetCheats()
+{
+    if (m_gameLoaded)
+        retro_cheat_reset();
+}
+
+void GBAStationCore::SetCheat(size_t index, bool enabled, const std::string &code)
+{
+    if (m_gameLoaded && !code.empty())
+        retro_cheat_set(static_cast<unsigned>(index), enabled, code.c_str());
+}
+
 bool GBAStationCore::ApplyPendingOptions()
 {
     if (!m_gameLoaded || !m_variablesUpdated)

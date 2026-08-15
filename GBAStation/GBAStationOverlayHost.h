@@ -10,6 +10,7 @@
 
 #include "imgui.h"
 
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -90,16 +91,30 @@ public:
     virtual std::string GetCoreOption(const std::string &, const std::string &fallback = "") { return fallback; }
     virtual void SetCoreOption(const std::string &, const std::string &) {}
 
+    struct Cheat {
+        std::string name;
+        bool enabled = false;
+    };
+    // Cheats are sourced from the current entry's cheatPath (.cht). Code text
+    // stays outside GameDB; the menu only toggles the entries already defined
+    // by that file.
+    virtual std::vector<Cheat> GetCheats() { return {}; }
+    virtual void SetCheatEnabled(size_t, bool) {}
+
     // Fast forward (toggle/hold mode + multiplier).
     virtual float GetFastForwardMultiplier() { return 2.0f; }
     virtual void SetFastForwardMultiplier(float) {}
     virtual bool GetFastForwardToggleMode() { return false; }
     virtual void SetFastForwardToggleMode(bool) {}
     virtual bool GetFastForwardActive() { return false; }
+    virtual bool GetRewindActive() { return false; }
 
     // HUD.
     virtual bool GetShowFps() { return false; }
-    virtual double GetCoreFps() { return 0.0; }
+    // This is measured by the frontend, rather than the core's nominal AV
+    // timing value. The latter is normally always 59.94/60.00 and therefore
+    // cannot indicate a performance problem.
+    virtual double GetMeasuredFps() { return 0.0; }
 
     // GPU textures (RGBA8). Backend-specific implementation lives in the host.
     virtual ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) = 0;

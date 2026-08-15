@@ -179,11 +179,13 @@ struct SlangPassRuntime
     std::vector<SlangTarget> targets;
     vk::Extent2D targetExtent{};
     uint32_t pushConstantSize = 0;
+    uint32_t uniformSize = 0;
 };
 
 struct SlangRuntime
 {
     const GBAStationSlang::Preset* preset = nullptr;
+    uint64_t presetVersion = 0;
     vk::RenderPass renderPass;
     vk::DescriptorPool descriptorPool;
     vk::Sampler nearestSampler;
@@ -193,6 +195,8 @@ struct SlangRuntime
     std::vector<SlangPassRuntime> passes;
     vk::Extent2D sourceExtent{};
     vk::Extent2D viewportExtent{};
+    uint32_t frameCount = 0;
+    uint32_t diagnosticFrames = 0;
 };
 
 struct SlangOutput
@@ -234,9 +238,14 @@ bool               s_lastImageValid = false;
 uint32_t           s_lastImageFrame = 0;
 std::vector<OverlayTextureResource> s_overlayTextures;
 std::vector<PendingOverlayUpload> s_pendingOverlayUploads;
+std::vector<OverlayTextureResource> s_retiredOverlayTextures;
 const GBAStationSlang::Preset* s_activeSlangPreset = nullptr;
+uint64_t s_activeSlangPresetVersion = 0;
 std::vector<SlangRuntime> s_slangRuntimes;
 std::string s_slangLastFailure;
+bool s_slangCleanupRequested = false;
+vk::Extent2D s_slangKeepSourceExtent{};
+vk::Extent2D s_slangKeepViewportExtent{};
 
 const retro_hw_render_context_negotiation_interface_vulkan* s_negIface = nullptr;
 retro_hw_render_interface_vulkan s_hwIface{};
@@ -398,6 +407,23 @@ void DestroyOverlayTextureResources()
     for (auto& texture : s_overlayTextures)
         DestroyOverlayTextureResource(texture, true);
     s_overlayTextures.clear();
+    for (auto& texture : s_retiredOverlayTextures)
+        DestroyOverlayTextureResource(texture, true);
+    s_retiredOverlayTextures.clear();
+}
+
+void CollectRetiredOverlayTextures()
+{
+    if (s_retiredOverlayTextures.empty() || !s_device) return;
+    std::vector<vk::Fence> fences;
+    fences.reserve(s_frames.size());
+    for (const auto& frame : s_frames)
+        if (frame.inflightFence) fences.push_back(frame.inflightFence);
+    if (!fences.empty()) (void)s_device.waitForFences(fences, VK_TRUE, UINT64_MAX);
+    for (auto& texture : s_retiredOverlayTextures)
+        DestroyOverlayTextureResource(texture, true);
+    VK_LOG_INFO("Released %zu retired overlay texture(s)", s_retiredOverlayTextures.size());
+    s_retiredOverlayTextures.clear();
 }
 
 void RecordPendingOverlayUploads(PerFrame& frame)
@@ -437,14 +463,6 @@ void RecordPendingOverlayUploads(PerFrame& frame)
 }
 
 struct SlangVertex { float position[4]; float uv[2]; };
-struct SlangGlobals
-{
-    float mvp[16];
-    float outputSize[4];
-    float finalViewportSize[4];
-    float sourceSize[4];
-    float originalSize[4];
-};
 
 uint32_t SlangPushConstantSize(const GBAStationSlang::Pass& pass)
 {
@@ -452,6 +470,14 @@ uint32_t SlangPushConstantSize(const GBAStationSlang::Pass& pass)
     for (const auto& member : pass.pushConstants)
         size = std::max(size, member.offset + member.size);
     return size;
+}
+
+uint32_t SlangUniformSize(const GBAStationSlang::Pass& pass)
+{
+    uint32_t size = 0;
+    for (const auto& member : pass.uniformMembers)
+        size = std::max(size, member.offset + member.size);
+    return std::max<uint32_t>(size, 64);
 }
 
 uint32_t ResolveSlangDimension(GBAStationSlang::ScaleType type, float scale,
@@ -558,14 +584,20 @@ void DestroySlangRuntime(SlangRuntime& runtime)
     runtime = {};
 }
 
-bool BuildSlangRuntime(SlangRuntime& runtime, const GBAStationSlang::Preset& preset,
+bool BuildSlangRuntime(SlangRuntime& runtime, const GBAStationSlang::Preset& preset, uint64_t presetVersion,
                        vk::Extent2D sourceExtent, vk::Extent2D viewportExtent)
 {
     runtime.preset = &preset;
+    runtime.presetVersion = presetVersion;
     runtime.sourceExtent = sourceExtent;
     runtime.viewportExtent = viewportExtent;
     const uint32_t frameCount = static_cast<uint32_t>(s_frames.size());
     if (frameCount == 0 || preset.passes.empty()) return false;
+    VK_LOG_INFO("Slang preset path=%s passes=%zu runtimeParameters=%zu uiParameters=%zu",
+                preset.path.c_str(), preset.passes.size(), preset.runtimeParameters.size(),
+                preset.parameters.size());
+    for (const std::string& warning : preset.warnings)
+        VK_LOG_WARN("Slang preset warning: %s", warning.c_str());
 
     vk::AttachmentDescription attachment;
     attachment.format = vk::Format::eR8G8B8A8Unorm;
@@ -581,11 +613,20 @@ bool BuildSlangRuntime(SlangRuntime& runtime, const GBAStationSlang::Preset& pre
     subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorReference;
+    const std::array<vk::SubpassDependency, 2> dependencies = {{
+        {VK_SUBPASS_EXTERNAL, 0, vk::PipelineStageFlagBits::eFragmentShader,
+         vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::AccessFlagBits::eShaderRead,
+         vk::AccessFlagBits::eColorAttachmentWrite},
+        {0, VK_SUBPASS_EXTERNAL, vk::PipelineStageFlagBits::eColorAttachmentOutput,
+         vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eColorAttachmentWrite,
+         vk::AccessFlagBits::eShaderRead}}};
     vk::RenderPassCreateInfo renderPassInfo;
     renderPassInfo.attachmentCount = 1;
     renderPassInfo.pAttachments = &attachment;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+    renderPassInfo.pDependencies = dependencies.data();
     runtime.renderPass = s_device.createRenderPass(renderPassInfo);
 
     uint32_t samplerCount = 0;
@@ -626,14 +667,16 @@ bool BuildSlangRuntime(SlangRuntime& runtime, const GBAStationSlang::Preset& pre
     s_device.unmapMemory(runtime.vertexMemory);
 
     vk::Extent2D inputExtent = sourceExtent;
-    for (const auto& definition : preset.passes)
+    for (size_t passIndex = 0; passIndex < preset.passes.size(); ++passIndex)
     {
+        const auto& definition = preset.passes[passIndex];
         SlangPassRuntime pass;
         pass.definition = &definition;
         pass.targetExtent = vk::Extent2D(
             ResolveSlangDimension(definition.scaleX, definition.scaleXValue, inputExtent.width, viewportExtent.width),
             ResolveSlangDimension(definition.scaleY, definition.scaleYValue, inputExtent.height, viewportExtent.height));
         pass.pushConstantSize = SlangPushConstantSize(definition);
+        pass.uniformSize = SlangUniformSize(definition);
         if (pass.pushConstantSize > s_gpu.getProperties().limits.maxPushConstantsSize)
             throw std::runtime_error("Slang preset push-constant block exceeds device limit");
 
@@ -714,12 +757,20 @@ bool BuildSlangRuntime(SlangRuntime& runtime, const GBAStationSlang::Preset& pre
         pass.targets.resize(frameCount);
         for (uint32_t frame = 0; frame < frameCount; ++frame)
         {
-            if (!CreateHostBuffer(sizeof(SlangGlobals), vk::BufferUsageFlagBits::eUniformBuffer,
+            if (!CreateHostBuffer(pass.uniformSize, vk::BufferUsageFlagBits::eUniformBuffer,
                                   pass.uniformBuffers[frame], pass.uniformMemories[frame]) ||
                 !CreateSlangTarget(runtime, pass.targets[frame], pass.targetExtent))
                 return false;
         }
         inputExtent = pass.targetExtent;
+        VK_LOG_INFO("Slang pass[%zu] target=%ux%u push=%u ubo=%u samplers=%zu uniforms=%zu alias=%s",
+                    passIndex, pass.targetExtent.width, pass.targetExtent.height, pass.pushConstantSize,
+                    pass.uniformSize, definition.samplers.size(), definition.uniformMembers.size(),
+                    definition.alias.empty() ? "<final>" : definition.alias.c_str());
+        for (const auto& sampler : definition.samplers)
+            VK_LOG_INFO("  sampler binding=%u name=%s", sampler.binding, sampler.name.c_str());
+        for (const auto& member : definition.uniformMembers)
+            VK_LOG_INFO("  ubo member=%s offset=%u size=%u", member.name.c_str(), member.offset, member.size);
         runtime.passes.push_back(std::move(pass));
     }
     VK_LOG_INFO("Slang chain ready: passes=%zu source=%ux%u viewport=%ux%u", runtime.passes.size(),
@@ -727,22 +778,29 @@ bool BuildSlangRuntime(SlangRuntime& runtime, const GBAStationSlang::Preset& pre
     return true;
 }
 
-SlangRuntime* FindSlangRuntime(const GBAStationSlang::Preset& preset,
+SlangRuntime* FindSlangRuntime(const GBAStationSlang::Preset& preset, uint64_t presetVersion,
                                vk::Extent2D sourceExtent, vk::Extent2D viewportExtent)
 {
     for (auto& runtime : s_slangRuntimes)
-        if (runtime.preset == &preset && runtime.sourceExtent == sourceExtent &&
+        if (runtime.preset == &preset && runtime.presetVersion == presetVersion && runtime.sourceExtent == sourceExtent &&
             runtime.viewportExtent == viewportExtent)
+        {
+            s_slangKeepSourceExtent = sourceExtent;
+            s_slangKeepViewportExtent = viewportExtent;
             return &runtime;
+        }
     try
     {
         SlangRuntime runtime;
-        if (!BuildSlangRuntime(runtime, preset, sourceExtent, viewportExtent))
+        if (!BuildSlangRuntime(runtime, preset, presetVersion, sourceExtent, viewportExtent))
         {
             DestroySlangRuntime(runtime);
             return nullptr;
         }
         s_slangRuntimes.push_back(std::move(runtime));
+        s_slangKeepSourceExtent = sourceExtent;
+        s_slangKeepViewportExtent = viewportExtent;
+        s_slangCleanupRequested = true;
         return &s_slangRuntimes.back();
     }
     catch (const std::exception& error)
@@ -757,6 +815,30 @@ SlangRuntime* FindSlangRuntime(const GBAStationSlang::Preset& preset,
     }
 }
 
+void CollectRetiredSlangRuntimes()
+{
+    if (!s_slangCleanupRequested || !s_device) return;
+    std::vector<vk::Fence> fences;
+    fences.reserve(s_frames.size());
+    for (const auto& frame : s_frames)
+        if (frame.inflightFence) fences.push_back(frame.inflightFence);
+    if (!fences.empty()) (void)s_device.waitForFences(fences, VK_TRUE, UINT64_MAX);
+
+    std::vector<SlangRuntime> retained;
+    retained.reserve(1);
+    for (auto& runtime : s_slangRuntimes)
+    {
+        if (runtime.preset == s_activeSlangPreset && runtime.presetVersion == s_activeSlangPresetVersion &&
+            runtime.sourceExtent == s_slangKeepSourceExtent &&
+            runtime.viewportExtent == s_slangKeepViewportExtent)
+            retained.push_back(std::move(runtime));
+        else
+            DestroySlangRuntime(runtime);
+    }
+    s_slangRuntimes = std::move(retained);
+    s_slangCleanupRequested = false;
+}
+
 struct SlangInput
 {
     vk::Image image;
@@ -764,33 +846,33 @@ struct SlangInput
     vk::Extent2D extent{};
 };
 
-void SetSlangSize(float (&destination)[4], vk::Extent2D extent)
-{
-    destination[0] = static_cast<float>(extent.width);
-    destination[1] = static_cast<float>(extent.height);
-    destination[2] = extent.width ? 1.0f / static_cast<float>(extent.width) : 0.0f;
-    destination[3] = extent.height ? 1.0f / static_cast<float>(extent.height) : 0.0f;
-}
-
 bool RenderSlangFrame(PerFrame& frame, const retro_vulkan_image& coreSource,
                       vk::Extent2D sourceExtent, SlangOutput& output)
 {
     const GBAStationSlang::Preset* preset = s_activeSlangPreset;
     if (!preset || preset->passes.empty() || coreSource.image_view == VK_NULL_HANDLE)
         return false;
-    SlangRuntime* runtime = FindSlangRuntime(*preset, sourceExtent, s_swapExtent);
+    SlangRuntime* runtime = FindSlangRuntime(*preset, s_activeSlangPresetVersion, sourceExtent, s_swapExtent);
     if (!runtime || s_currentFrame >= s_frames.size()) return false;
 
     const vk::Image coreImage(coreSource.create_info.image);
     const vk::ImageLayout coreLayout = static_cast<vk::ImageLayout>(coreSource.image_layout);
-    if (coreLayout != vk::ImageLayout::eShaderReadOnlyOptimal)
-        TransitionLayout(frame.cmd, coreImage, coreLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
-                         vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-                         vk::AccessFlagBits::eShaderRead, vk::PipelineStageFlagBits::eAllCommands,
-                         vk::PipelineStageFlagBits::eFragmentShader);
+    // Flycast usually hands us an image that is already in SHADER_READ_ONLY
+    // layout. Layout equality does not make the core's color writes visible to
+    // this command buffer, though; retain this same-layout barrier so sampling
+    // never sees an uninitialised (black) cache line.
+    TransitionLayout(frame.cmd, coreImage, coreLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
+                     vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                     vk::AccessFlagBits::eShaderRead, vk::PipelineStageFlagBits::eAllCommands,
+                     vk::PipelineStageFlagBits::eFragmentShader);
     const SlangInput original{coreImage, vk::ImageView(coreSource.image_view), sourceExtent};
     SlangInput current = original;
     std::map<std::string, SlangInput> aliases;
+    const bool diagnostic = runtime->diagnosticFrames < 3;
+    if (diagnostic)
+        VK_LOG_INFO("Slang frame source image=%p view=%p layout=%d extent=%ux%u passes=%zu",
+                    static_cast<VkImage>(coreImage), coreSource.image_view, static_cast<int>(coreLayout),
+                    sourceExtent.width, sourceExtent.height, runtime->passes.size());
 
     for (SlangPassRuntime& pass : runtime->passes)
     {
@@ -804,18 +886,65 @@ bool RenderSlangFrame(PerFrame& frame, const retro_vulkan_image& coreSource,
                          oldLayout == vk::ImageLayout::eUndefined ? vk::PipelineStageFlagBits::eTopOfPipe : vk::PipelineStageFlagBits::eFragmentShader,
                          vk::PipelineStageFlagBits::eColorAttachmentOutput);
 
-        SlangGlobals globals{};
-        globals.mvp[0] = globals.mvp[5] = globals.mvp[10] = globals.mvp[15] = 1.0f;
-        SetSlangSize(globals.outputSize, target.extent);
-        SetSlangSize(globals.finalViewportSize, s_swapExtent);
-        SetSlangSize(globals.sourceSize, current.extent);
-        SetSlangSize(globals.originalSize, original.extent);
-        void* uniformData = s_device.mapMemory(pass.uniformMemories[s_currentFrame], 0, sizeof(globals));
-        std::memcpy(uniformData, &globals, sizeof(globals));
-        s_device.flushMappedMemoryRanges(vk::MappedMemoryRange(pass.uniformMemories[s_currentFrame], 0, sizeof(globals)));
+        std::vector<uint8_t> uniformDataBytes(pass.uniformSize, 0);
+        auto writeUniformVec4 = [&uniformDataBytes, &definition](const std::string& name, vk::Extent2D extent) {
+            const float values[4] = {static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                     extent.width ? 1.0f / extent.width : 0.0f,
+                                     extent.height ? 1.0f / extent.height : 0.0f};
+            for (const auto& member : definition.uniformMembers)
+                if (member.name == name && member.size >= sizeof(values))
+                    std::memcpy(uniformDataBytes.data() + member.offset, values, sizeof(values));
+        };
+        auto writeUniformMemberSize = [&uniformDataBytes](const GBAStationSlang::PushConstantMember& member,
+                                                            vk::Extent2D extent) {
+            if (member.size < sizeof(float) * 4) return;
+            const float values[4] = {static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                     extent.width ? 1.0f / extent.width : 0.0f,
+                                     extent.height ? 1.0f / extent.height : 0.0f};
+            std::memcpy(uniformDataBytes.data() + member.offset, values, sizeof(values));
+        };
+        auto writeUniformUint = [&uniformDataBytes, &definition](const std::string& name, uint32_t value) {
+            for (const auto& member : definition.uniformMembers)
+                if (member.name == name && member.size >= sizeof(value))
+                    std::memcpy(uniformDataBytes.data() + member.offset, &value, sizeof(value));
+        };
+        for (const auto& member : definition.uniformMembers)
+            if (member.name == "MVP" && member.size >= 64)
+            {
+                const float identity[16] = {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+                                            0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
+                std::memcpy(uniformDataBytes.data() + member.offset, identity, sizeof(identity));
+            }
+        writeUniformVec4("OutputSize", target.extent);
+        writeUniformVec4("FinalViewportSize", s_swapExtent);
+        writeUniformVec4("SourceSize", current.extent);
+        writeUniformVec4("OriginalSize", original.extent);
+        // RetroArch Slang exposes each sampled alias as <alias>Size.  The
+        // reflection must populate these too: e.g. diffusion-h samples
+        // ColorAdj while PP-reflex samples PhosphorLine. Leaving those blocks
+        // at zero collapses texture coordinates and produces a black frame.
+        for (const auto& member : definition.uniformMembers)
+        {
+            constexpr const char* suffix = "Size";
+            if (member.name.size() <= 4 || member.name.compare(member.name.size() - 4, 4, suffix) != 0)
+                continue;
+            const std::string sourceName = member.name.substr(0, member.name.size() - 4);
+            if (sourceName == "Source") writeUniformMemberSize(member, current.extent);
+            else if (sourceName == "Original") writeUniformMemberSize(member, original.extent);
+            else if (sourceName == "FinalViewport") writeUniformMemberSize(member, s_swapExtent);
+            else if (sourceName != "Output")
+            {
+                const auto alias = aliases.find(sourceName);
+                if (alias != aliases.end()) writeUniformMemberSize(member, alias->second.extent);
+            }
+        }
+        writeUniformUint("FrameCount", runtime->frameCount);
+        void* uniformData = s_device.mapMemory(pass.uniformMemories[s_currentFrame], 0, pass.uniformSize);
+        std::memcpy(uniformData, uniformDataBytes.data(), uniformDataBytes.size());
+        s_device.flushMappedMemoryRanges(vk::MappedMemoryRange(pass.uniformMemories[s_currentFrame], 0, pass.uniformSize));
         s_device.unmapMemory(pass.uniformMemories[s_currentFrame]);
 
-        vk::DescriptorBufferInfo bufferInfo(pass.uniformBuffers[s_currentFrame], 0, sizeof(globals));
+        vk::DescriptorBufferInfo bufferInfo(pass.uniformBuffers[s_currentFrame], 0, pass.uniformSize);
         std::vector<vk::DescriptorImageInfo> imageInfos;
         imageInfos.reserve(definition.samplers.size());
         std::vector<vk::WriteDescriptorSet> writes;
@@ -825,12 +954,19 @@ bool RenderSlangFrame(PerFrame& frame, const retro_vulkan_image& coreSource,
         for (const auto& sampler : definition.samplers)
         {
             SlangInput input = current;
+            const char* sourceName = "previous-pass";
             if (sampler.name == "Original") input = original;
+            if (sampler.name == "Original") sourceName = "original";
             else if (sampler.name != "Source")
             {
                 const auto alias = aliases.find(sampler.name);
-                if (alias != aliases.end()) input = alias->second;
+                if (alias != aliases.end()) { input = alias->second; sourceName = "alias"; }
+                else sourceName = "missing-alias/fallback-previous";
             }
+            if (diagnostic)
+                VK_LOG_INFO("Slang bind pass=%s binding=%u sampler=%s source=%s image=%p extent=%ux%u",
+                            definition.path.c_str(), sampler.binding, sampler.name.c_str(), sourceName,
+                            static_cast<VkImage>(input.image), input.extent.width, input.extent.height);
             imageInfos.emplace_back(definition.linear ? runtime->linearSampler : runtime->nearestSampler,
                                     input.view, vk::ImageLayout::eShaderReadOnlyOptimal);
             writes.emplace_back(pass.descriptorSets[s_currentFrame], sampler.binding, 0, 1,
@@ -852,10 +988,52 @@ bool RenderSlangFrame(PerFrame& frame, const retro_vulkan_image& coreSource,
                 if (member.name == name && member.size >= sizeof(values))
                     std::memcpy(pushConstants.data() + member.offset, values, sizeof(values));
         };
+        auto writePushMemberSize = [&pushConstants](const GBAStationSlang::PushConstantMember& member,
+                                                     vk::Extent2D extent) {
+            if (member.size < sizeof(float) * 4) return;
+            const float values[4] = {static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                     extent.width ? 1.0f / extent.width : 0.0f,
+                                     extent.height ? 1.0f / extent.height : 0.0f};
+            std::memcpy(pushConstants.data() + member.offset, values, sizeof(values));
+        };
+        auto writePushUint = [&pushConstants, &definition](const std::string& name, uint32_t value) {
+            for (const auto& member : definition.pushConstants)
+                if (member.name == name && member.size >= sizeof(value))
+                    std::memcpy(pushConstants.data() + member.offset, &value, sizeof(value));
+        };
         writeVec4("SourceSize", current.extent);
         writeVec4("OriginalSize", original.extent);
         writeVec4("OutputSize", target.extent);
         writeVec4("FinalViewportSize", s_swapExtent);
+        for (const auto& member : definition.pushConstants)
+        {
+            constexpr const char* suffix = "Size";
+            if (member.name.size() <= 4 || member.name.compare(member.name.size() - 4, 4, suffix) != 0)
+                continue;
+            const std::string sourceName = member.name.substr(0, member.name.size() - 4);
+            if (sourceName == "Source") writePushMemberSize(member, current.extent);
+            else if (sourceName == "Original") writePushMemberSize(member, original.extent);
+            else if (sourceName == "FinalViewport") writePushMemberSize(member, s_swapExtent);
+            else if (sourceName != "Output")
+            {
+                const auto alias = aliases.find(sourceName);
+                if (alias != aliases.end()) writePushMemberSize(member, alias->second.extent);
+            }
+        }
+        writePushUint("FrameCount", runtime->frameCount);
+        // runtimeParameters contains all pragma defaults; parameters only
+        // contains the controls intentionally exposed by the preset.  Overlay
+        // edits take precedence without mutating the parsed runtime defaults.
+        for (const auto& parameter : preset->runtimeParameters)
+        {
+            float value = parameter.value;
+            const auto uiParameter = std::find_if(preset->parameters.begin(), preset->parameters.end(),
+                [&parameter](const GBAStationSlang::Parameter& candidate) {
+                    return candidate.runtimeId == parameter.runtimeId;
+                });
+            if (uiParameter != preset->parameters.end()) value = uiParameter->value;
+            writeFloat(parameter.runtimeId, value);
+        }
         for (const auto& parameter : preset->parameters)
         {
             writeFloat(parameter.id, parameter.value);
@@ -888,6 +1066,10 @@ bool RenderSlangFrame(PerFrame& frame, const retro_vulkan_image& coreSource,
         target.initialized = true;
         current = {target.image, target.view, target.extent};
         if (!definition.alias.empty()) aliases[definition.alias] = current;
+        if (diagnostic)
+            VK_LOG_INFO("Slang frame pass output image=%p extent=%ux%u alias=%s",
+                        static_cast<VkImage>(target.image), target.extent.width, target.extent.height,
+                        definition.alias.empty() ? "<final>" : definition.alias.c_str());
     }
     if (coreLayout != vk::ImageLayout::eShaderReadOnlyOptimal)
         TransitionLayout(frame.cmd, coreImage, vk::ImageLayout::eShaderReadOnlyOptimal, coreLayout,
@@ -897,6 +1079,8 @@ bool RenderSlangFrame(PerFrame& frame, const retro_vulkan_image& coreSource,
     output.image = current.image;
     output.extent = current.extent;
     output.valid = true;
+    ++runtime->frameCount;
+    if (diagnostic) ++runtime->diagnosticFrames;
     return true;
 }
 
@@ -1376,6 +1560,7 @@ void Shutdown()
         DestroySlangRuntime(runtime);
     s_slangRuntimes.clear();
     s_activeSlangPreset = nullptr;
+    s_activeSlangPresetVersion = 0;
 
     ShutdownOverlayRendererInternal();
 
@@ -1440,6 +1625,8 @@ bool BeginFrame()
 
     // Wait for the previous use of this frame slot to complete on the GPU.
     (void)s_device.waitForFences(f.inflightFence, VK_TRUE, UINT64_MAX);
+    CollectRetiredSlangRuntimes();
+    CollectRetiredOverlayTextures();
     for (vk::Buffer buffer : f.deferredUploadBuffers)
         if (buffer) s_device.destroyBuffer(buffer);
     for (vk::DeviceMemory memory : f.deferredUploadMemories)
@@ -1560,8 +1747,26 @@ void EndFrame()
                      {}, vk::AccessFlagBits::eTransferWrite,
                      vk::PipelineStageFlagBits::eTopOfPipe,
                      vk::PipelineStageFlagBits::eTransfer);
+    // The core blit is normally fullscreen, but it is not a valid guarantee
+    // that every swapchain texel has been written in every frame (a core can
+    // temporarily change its backing extent or output viewport).  The overlay
+    // pass deliberately uses LOAD so that a transparent full-screen mask can
+    // be blended above the game.  Therefore initialise the *entire* acquired
+    // swap image before every blit, including the 16:9 path.  This prevents a
+    // rotating swapchain image's undefined/old right-hand pixels from leaking
+    // through semi-transparent mask texels as black flicker.
+    {
+        vk::ClearColorValue clear(std::array<float, 4>{0.f, 0.f, 0.f, 1.f});
+        vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+        f.cmd.clearColorImage(swapImage, vk::ImageLayout::eTransferDstOptimal, clear, range);
+        vk::MemoryBarrier clearToBlit(vk::AccessFlagBits::eTransferWrite,
+                                      vk::AccessFlagBits::eTransferWrite);
+        f.cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                              vk::PipelineStageFlagBits::eTransfer,
+                              {}, clearToBlit, {}, {});
+    }
     if (trace)
-        VK_LOG_INFO("EndFrame[%u] swap transition complete", tracedFrames);
+        VK_LOG_INFO("EndFrame[%u] swap transition and full clear complete", tracedFrames);
 
     if (sourceImage)
     {
@@ -1593,6 +1798,11 @@ void EndFrame()
             (s_sourceExtent.height ? s_sourceExtent.height : s_swapExtent.height);
         SlangOutput slangOutput;
         const bool slangApplied = RenderSlangFrame(f, *sourceImage, {srcW, srcH}, slangOutput);
+        if (s_activeSlangPreset)
+            VK_LOG_INFO("Slang composite applied=%d output=%p extent=%ux%u presetVersion=%llu",
+                        slangApplied ? 1 : 0, static_cast<VkImage>(slangOutput.image),
+                        slangOutput.extent.width, slangOutput.extent.height,
+                        static_cast<unsigned long long>(s_activeSlangPresetVersion));
         vk::Image blitSource = slangApplied ? slangOutput.image : coreImage;
         vk::ImageLayout blitSourceLayout = slangApplied ? vk::ImageLayout::eShaderReadOnlyOptimal : coreLayout;
         const uint32_t blitSourceW = slangApplied ? slangOutput.extent.width : srcW;
@@ -1626,8 +1836,8 @@ void EndFrame()
         }
 
         // Destination rect: the overlay's screen-size/display-mode selection,
-        // or the full swapchain when none is set. When it doesn't cover the
-        // whole image we clear to black first so the border bars are clean.
+        // or the full swapchain when none is set. The complete swapchain has
+        // already been cleared above, so border bars remain deterministic.
         int32_t dstX0 = 0, dstY0 = 0;
         int32_t dstX1 = static_cast<int32_t>(s_swapExtent.width);
         int32_t dstY1 = static_cast<int32_t>(s_swapExtent.height);
@@ -1643,17 +1853,6 @@ void EndFrame()
             dstX1 = dstX0 + static_cast<int32_t>(s_gameViewport.extent.width);
             dstY1 = dstY0 + static_cast<int32_t>(s_gameViewport.extent.height);
 
-            vk::ClearColorValue clear(std::array<float, 4>{0.f, 0.f, 0.f, 1.f});
-            vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-            f.cmd.clearColorImage(swapImage, vk::ImageLayout::eTransferDstOptimal, clear, range);
-
-            // The clear writes the whole image and the blit overwrites the
-            // inner rect — order the two transfer writes.
-            vk::MemoryBarrier mb(vk::AccessFlagBits::eTransferWrite,
-                                 vk::AccessFlagBits::eTransferWrite);
-            f.cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                  vk::PipelineStageFlagBits::eTransfer,
-                                  {}, mb, {}, {});
         }
 
         vk::ImageBlit blit;
@@ -1689,12 +1888,10 @@ void EndFrame()
     }
     else
     {
-        // Core didn't produce a frame: clear to black so the swap image is valid.
-        vk::ClearColorValue clear(std::array<float, 4>{0.f, 0.f, 0.f, 1.f});
-        vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-        f.cmd.clearColorImage(swapImage, vk::ImageLayout::eTransferDstOptimal, clear, range);
+        // Core didn't produce a frame. The unconditional full clear above
+        // already made this acquired swap image deterministic.
         if (trace)
-            VK_LOG_INFO("EndFrame[%u] no core image, cleared", tracedFrames);
+            VK_LOG_INFO("EndFrame[%u] no core image; retaining full clear", tracedFrames);
     }
 
     if (hasOverlayDraw)
@@ -1703,6 +1900,12 @@ void EndFrame()
                          vk::ImageLayout::eTransferDstOptimal,
                          vk::ImageLayout::eColorAttachmentOptimal,
                          vk::AccessFlagBits::eTransferWrite,
+                         // ImGui's menu, dimmer and full-screen mask use
+                         // alpha blending. Blending reads the destination
+                         // colour before it writes the result, so a write-only
+                         // destination mask leaves the preceding game blit
+                         // unavailable to the blend unit on some frames.
+                         vk::AccessFlagBits::eColorAttachmentRead |
                          vk::AccessFlagBits::eColorAttachmentWrite,
                          vk::PipelineStageFlagBits::eTransfer,
                          vk::PipelineStageFlagBits::eColorAttachmentOutput);
@@ -1899,9 +2102,12 @@ void SetOverlayDrawData(ImDrawData* drawData)
     s_overlayDrawData = drawData;
 }
 
-void SetSlangPreset(const GBAStationSlang::Preset* preset)
+void SetSlangPreset(const GBAStationSlang::Preset* preset, uint64_t version)
 {
+    if (s_activeSlangPreset != preset || s_activeSlangPresetVersion != version)
+        s_slangCleanupRequested = true;
     s_activeSlangPreset = preset;
+    s_activeSlangPresetVersion = version;
 }
 
 ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, uint32_t height)
@@ -2030,14 +2236,17 @@ void DestroyOverlayTexture(ImTextureID textureId)
     if (!textureId || !s_device)
         return;
 
-    // A mask can be replaced while the core still has command buffers queued
-    // against the same Vulkan queue.  Waiting for the whole device here was
-    // the source of ErrorDeviceLost on Switch NVK.  Keep retired resources
-    // alive until overlay shutdown; masks are small and replacement is rare.
-    // This trades a bounded amount of menu-session memory for correct queue
-    // ownership and avoids tearing down a descriptor still referenced by an
-    // in-flight ImGui draw list.
-    VK_LOG_INFO("Overlay texture retired; deferred until overlay shutdown");
+    const VkDescriptorSet descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(textureId));
+    const auto found = std::find_if(s_overlayTextures.begin(), s_overlayTextures.end(),
+                                    [descriptor](const OverlayTextureResource& texture) {
+                                        return texture.descriptor == descriptor;
+                                    });
+    if (found == s_overlayTextures.end()) return;
+    // Never tear down an ImGui descriptor during the frame that may still use
+    // it. BeginFrame later waits all front-end fences, then reclaims it.
+    s_retiredOverlayTextures.push_back(std::move(*found));
+    s_overlayTextures.erase(found);
+    VK_LOG_INFO("Overlay texture retired; deferred until all frame fences signal");
 }
 
 const retro_hw_render_interface_vulkan* GetHwRenderInterface()

@@ -249,6 +249,8 @@ uint64_t MapButtons(u64 hid, int leftX, int leftY, int rightX, int rightY)
         ? "dc.hotkey.fastforward" : "dc.handle.fastforward";
     if (bound(fastForwardKey, "PAD_LSB"))
         b |= Pad_FastForward;
+    if (bound("dc.handle.rewind", "none"))
+        b |= Pad_Rewind;
     return b;
 }
 #endif

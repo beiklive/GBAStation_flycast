@@ -99,6 +99,12 @@ public:
     /// @brief Save states
     void SaveState(const std::string &path);
     void LoadState(const std::string &path);
+    // In-memory state APIs are used by rewind. They intentionally share the
+    // exact libretro serialization path used by disk save states.
+    bool SerializeState(std::vector<uint8_t> &data);
+    bool DeserializeState(const std::vector<uint8_t> &data);
+    void ResetCheats();
+    void SetCheat(size_t index, bool enabled, const std::string &code);
 
     /// @brief Set renderer for texture creation
     void SetRenderer(IRenderer *renderer) { m_renderer = renderer; }

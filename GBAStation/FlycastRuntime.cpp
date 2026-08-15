@@ -20,6 +20,7 @@
 #include <SDL_mixer.h>
 
 #include <algorithm>
+#include <cmath>
 #include <ctime>
 #include <vector>
 #include <zlib.h>
@@ -232,6 +233,129 @@ std::string NormalizeFlycastRomPath(std::string path)
     return path;
 }
 
+// GameDB is also consumed by the launcher, which uses filesystem paths rooted
+// at `/GBAStation` rather than libnx's optional `sdmc:` device prefix. Keep
+// persisted values canonical even when a picker returns an sdmc-prefixed path.
+std::string NormalizeGameDbPath(std::string path)
+{
+    return NormalizeFlycastRomPath(std::move(path));
+}
+
+std::string JsonStringOr(const nlohmann::json& object, const char* key,
+                         const std::string& fallback = {})
+{
+    const auto value = object.find(key);
+    return value != object.end() && value->is_string() ? value->get<std::string>() : fallback;
+}
+
+bool JsonBoolOr(const nlohmann::json& object, const char* key, bool fallback = false)
+{
+    const auto value = object.find(key);
+    return value != object.end() && value->is_boolean() ? value->get<bool>() : fallback;
+}
+
+// GameDB is shared with other frontends, so an old entry may have a field with
+// a different type. Do not let one malformed optional setting discard the
+// whole matched game entry (and all settings following it).
+int JsonIntOr(const nlohmann::json& object, const char* key, int fallback = 0)
+{
+    const auto value = object.find(key);
+    if (value == object.end() ||
+        (!value->is_number_integer() && !value->is_number_unsigned()))
+        return fallback;
+    try
+    {
+        return value->get<int>();
+    }
+    catch (...)
+    {
+        return fallback;
+    }
+}
+
+float JsonFloatOr(const nlohmann::json& object, const char* key, float fallback = 0.0f)
+{
+    const auto value = object.find(key);
+    if (value == object.end() || !value->is_number())
+        return fallback;
+    try
+    {
+        const float parsed = value->get<float>();
+        return std::isfinite(parsed) ? parsed : fallback;
+    }
+    catch (...)
+    {
+        return fallback;
+    }
+}
+
+constexpr const char* kFlycastInternalResolutionValues[] = {
+    // GameDB's ndsInternalResolution is defined by the launcher as index 1-4.
+    "320x240", "640x480", "960x720", "1280x960"};
+
+std::string FlycastResolutionFromGameDbIndex(int index)
+{
+    return kFlycastInternalResolutionValues[std::clamp(index, 1, 4) - 1];
+}
+
+bool IsFlycastScreenLayout(const std::string& value)
+{
+    return value.empty() || value == "Stretch" || value == "4:3" || value == "16:9" ||
+           value == "Original" || value == "1x" || value == "2x" || value == "3x" ||
+           value == "4x" || value == "5x" || value == "Auto";
+}
+
+int GameDbIndexFromFlycastResolution(const std::string& value)
+{
+    for (int i = 0; i < 4; ++i)
+        if (value == kFlycastInternalResolutionValues[i])
+            return i + 1;
+    return 2; // Flycast's 640x480 default.
+}
+
+bool WriteGameDbAtomically(const char* path, const nlohmann::json& data)
+{
+    if (!path || !*path)
+        return false;
+    const std::string destination(path);
+    const std::string temporary = destination + ".tmp";
+    std::ofstream out(temporary, std::ios::trunc);
+    if (!out)
+        return false;
+    out << data.dump(4);
+    out.close();
+    if (!out)
+    {
+        return false;
+    }
+
+    // Desktop CRTs usually replace an existing target here. Horizon's FAT
+    // layer does not, so the direct rename always fails once GameData exists.
+    // Move the old database aside first, then roll it back if promoting the
+    // complete temporary file fails. This preserves a usable GameDB across an
+    // interrupted write without relying on replace-on-rename semantics.
+    if (std::rename(temporary.c_str(), destination.c_str()) == 0)
+        return true;
+
+    const std::string backup = destination + ".bak";
+    if (std::rename(destination.c_str(), backup.c_str()) != 0)
+    {
+        LOG_WARN("HOME", "GameDB replace could not move existing file aside: %s", destination.c_str());
+        return false;
+    }
+    if (std::rename(temporary.c_str(), destination.c_str()) == 0)
+    {
+        std::remove(backup.c_str());
+        return true;
+    }
+
+    // Do not leave the user without the original database if the second move
+    // fails (for example due to a transient filesystem error).
+    if (std::rename(backup.c_str(), destination.c_str()) != 0)
+        LOG_ERROR("HOME", "GameDB restore failed; backup retained at %s", backup.c_str());
+    return false;
+}
+
 std::string CurrentFlycastTimestamp()
 {
     std::time_t now = std::time(nullptr);
@@ -324,6 +448,21 @@ public:
     {
         if (core_) core_->SetCoreOption(key, value);
     }
+    std::vector<IOverlayHost::Cheat> GetCheats() override
+    {
+        std::vector<IOverlayHost::Cheat> result;
+        if (!runtime_)
+            return result;
+        result.reserve(runtime_->cheats_.size());
+        for (const auto &cheat : runtime_->cheats_)
+            result.push_back({cheat.name, cheat.enabled});
+        return result;
+    }
+    void SetCheatEnabled(size_t index, bool enabled) override
+    {
+        if (runtime_)
+            runtime_->SetCheatEnabled(index, enabled);
+    }
 
     float GetFastForwardMultiplier() override
     {
@@ -345,13 +484,17 @@ public:
     {
         return runtime_->fastForward_;
     }
+    bool GetRewindActive() override
+    {
+        return runtime_ && runtime_->rewindActive_;
+    }
     bool GetShowFps() override
     {
         return runtime_->showFps_;
     }
-    double GetCoreFps() override
+    double GetMeasuredFps() override
     {
-        return core_ ? core_->GetFPS() : 0.0;
+        return runtime_ ? runtime_->measuredFps_ : 0.0;
     }
 
     ImTextureID CreateTextureRGBA(const unsigned char *rgba, int width, int height) override
@@ -541,6 +684,10 @@ bool FlycastRuntime::Initialize(const LaunchInfo &)
                 {
                     showFps_ = (value == "true" || value == "1");
                 }
+                else if (key == "dc.handle.rewind")
+                {
+                    rewindConfigured_ = !value.empty() && value != "none";
+                }
                 else if (key == "save.autoLoadState0")
                 {
                     try
@@ -621,7 +768,11 @@ bool FlycastRuntime::LoadContent(const std::string &path)
     {
         LOG_ERROR("HOME", "LoadGame failed; idling");
     }
-    else if (!InitOverlay(romPath_))
+    else
+    {
+        LoadCheats();
+    }
+    if (core_->IsGameLoaded() && !InitOverlay(romPath_))
     {
         LOG_WARN("HOME", "Overlay init failed; continuing without GBAStation overlay");
     }
@@ -752,7 +903,8 @@ void FlycastRuntime::RenderOverlayFrame(float deltaTime)
                      static_cast<int>(width), static_cast<int>(height));
     ImGui::Render();
     GBAStationVulkan::SetOverlayDrawData(ImGui::GetDrawData());
-    GBAStationVulkan::SetSlangPreset(overlay_->IsShaderEnabled() ? overlay_->ShaderPreset() : nullptr);
+    GBAStationVulkan::SetSlangPreset(overlay_->IsShaderEnabled() ? overlay_->ShaderPreset() : nullptr,
+                                     overlay_->ShaderPresetVersion());
 }
 
 void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
@@ -833,6 +985,12 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
         }
         if (overlay_->ConsumeGameDisplaySettingsSaveRequest())
             SaveFlycastDisplaySettings();
+        if (overlay_->ConsumeSyncDisplaySettingsRequest())
+            SyncFlycastDisplaySettings();
+        if (overlay_->ConsumeSyncMaskSettingsRequest())
+            SyncFlycastMaskSettings();
+        if (overlay_->ConsumeSyncShaderSettingsRequest())
+            SyncFlycastShaderSettings();
     }
     if (exitRequested_)
         return;
@@ -840,12 +998,15 @@ void FlycastRuntime::HandleInput(const FrameInput &input)
     const bool overlayVisible = overlay_ && overlay_->IsVisible();
     const bool ffHeld = (input.buttons & Pad_FastForward) != 0;
     const bool ffPressed = (input.pressed & Pad_FastForward) != 0;
+    rewindActive_ = !overlayVisible && rewindConfigured_ && rewindSupported_ &&
+                    (input.buttons & Pad_Rewind) != 0 && !rewindStates_.empty();
     if (fastForwardToggleMode_) {
         if (ffPressed) {
             fastForwardToggle_ = !fastForwardToggle_;
         }
     }
-    fastForward_ = !overlayVisible && (fastForwardToggleMode_ ? fastForwardToggle_ : ffHeld);
+    fastForward_ = !rewindActive_ && !overlayVisible &&
+                   (fastForwardToggleMode_ ? fastForwardToggle_ : ffHeld);
     if (audio_)
         audio_->SetFastForward(fastForward_);
     if (core_)
@@ -908,10 +1069,20 @@ void FlycastRuntime::RunFrame()
     {
         if (traceFrame)
             LOG_INFO("FRAME", "frame %u retro_run begin", loggedFrames);
+        unsigned emulatedFrames = 0;
         if (overlay_ && overlay_->IsVisible())
             core_->ApplyPendingOptions();
+        else if (rewindActive_)
+        {
+            if (!StepRewind())
+                rewindActive_ = false;
+        }
         else
+        {
             core_->RunFrame();
+            emulatedFrames = 1;
+            CaptureRewindState();
+        }
         if (traceFrame)
             LOG_INFO("FRAME", "frame %u retro_run complete", loggedFrames);
         // The frontend owns pacing through SDL audio.  While fast-forwarding
@@ -923,8 +1094,11 @@ void FlycastRuntime::RunFrame()
             for (int i = 0; i < extra; ++i)
             {
                 core_->RunFrame();
+                ++emulatedFrames;
+                CaptureRewindState();
             }
         }
+        UpdateMeasuredFps(emulatedFrames);
         bool swapSucceeded = false;
         if (core_->ConsumeDiskSwapResult(swapSucceeded))
         {
@@ -944,6 +1118,88 @@ void FlycastRuntime::RunFrame()
     }
     if (traceFrame)
         ++loggedFrames;
+}
+
+void FlycastRuntime::UpdateMeasuredFps(unsigned emulatedFrames)
+{
+    if (emulatedFrames == 0)
+        return;
+    const uint64_t now = SDL_GetPerformanceCounter();
+    const uint64_t frequency = SDL_GetPerformanceFrequency();
+    if (fpsWindowStart_ == 0)
+        fpsWindowStart_ = now;
+    fpsWindowFrames_ += emulatedFrames;
+    const double elapsed = static_cast<double>(now - fpsWindowStart_) /
+                           static_cast<double>(frequency);
+    if (elapsed >= 0.35)
+    {
+        const double instantaneous = static_cast<double>(fpsWindowFrames_) / elapsed;
+        measuredFps_ = measuredFps_ <= 0.0 ? instantaneous
+                                           : measuredFps_ * 0.35 + instantaneous * 0.65;
+        fpsWindowFrames_ = 0;
+        fpsWindowStart_ = now;
+    }
+}
+
+void FlycastRuntime::CaptureRewindState()
+{
+    // Dreamcast states can be large. Capturing at 20Hz (or keeping FBNeo's
+    // fixed 120-entry queue) can consume all Switch memory, so retain a small
+    // byte-bounded history only when a rewind binding is configured.
+    constexpr int kCaptureInterval = 3;
+    constexpr size_t kHistoryBudget = 96u * 1024u * 1024u;
+    constexpr size_t kMaxSingleState = 24u * 1024u * 1024u;
+    if (!core_ || !rewindConfigured_ || !rewindSupported_ ||
+        ++rewindCaptureDivider_ < kCaptureInterval)
+        return;
+    rewindCaptureDivider_ = 0;
+
+    std::vector<uint8_t> state;
+    if (!core_->SerializeState(state))
+    {
+        rewindSupported_ = false;
+        rewindStates_.clear();
+        rewindStateBytes_ = 0;
+        LOG_WARN("REWIND", "Flycast does not provide a serializable state; rewind disabled");
+        return;
+    }
+    if (state.size() > kMaxSingleState)
+    {
+        rewindSupported_ = false;
+        rewindStates_.clear();
+        rewindStateBytes_ = 0;
+        LOG_WARN("REWIND", "Flycast state is %zu bytes (limit %zu); rewind disabled to protect memory",
+                 state.size(), kMaxSingleState);
+        return;
+    }
+    rewindStateBytes_ += state.size();
+    rewindStates_.emplace_back(std::move(state));
+    while (!rewindStates_.empty() && rewindStateBytes_ > kHistoryBudget)
+    {
+        rewindStateBytes_ -= rewindStates_.front().size();
+        rewindStates_.pop_front();
+    }
+}
+
+bool FlycastRuntime::StepRewind()
+{
+    if (!core_ || rewindStates_.empty())
+        return false;
+    std::vector<uint8_t> state = std::move(rewindStates_.back());
+    rewindStateBytes_ -= state.size();
+    rewindStates_.pop_back();
+    if (!core_->DeserializeState(state))
+    {
+        LOG_WARN("REWIND", "retro_unserialize failed; rewind history cleared");
+        rewindStates_.clear();
+        rewindStateBytes_ = 0;
+        return false;
+    }
+    // Flycast's unserialize restores VRAM but does not necessarily refresh its
+    // final FBO. A cleared frame produces a visible restored picture.
+    core_->ClearInputs();
+    core_->RunFrame();
+    return true;
 }
 
 void FlycastRuntime::RenderFrame()
@@ -1175,6 +1431,10 @@ void FlycastRuntime::Shutdown()
         LOG_INFO("HOME", "GBAStation auto save on exit slot=%d path=%s", slot, statePath.c_str());
         core_->SaveState(statePath);
     }
+    // Persist the final overlay state before it is destroyed. This is
+    // deliberately independent of the per-input save-request flag: an exit
+    // immediately after a setting change must not lose the GameDB update.
+    SaveFlycastDisplaySettings();
     SaveFlycastPlayStats(romPath_);
     ShutdownOverlay();
     core_.reset();
@@ -1251,6 +1511,113 @@ void FlycastRuntime::SetFastForwardToggleMode(bool toggleMode)
     if (!toggleMode)
         fastForwardToggle_ = false;
     WriteFlycastConfigValue("fastforward.mode", toggleMode ? "toggle" : "hold");
+}
+
+namespace
+{
+std::string TrimCheatValue(std::string value)
+{
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos)
+        return {};
+    const size_t last = value.find_last_not_of(" \t\r\n");
+    value = value.substr(first, last - first + 1);
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+        return value.substr(1, value.size() - 2);
+    return value;
+}
+
+bool CheatBool(const std::string &value)
+{
+    return value == "true" || value == "1" || value == "enabled";
+}
+} // namespace
+
+void FlycastRuntime::LoadCheats()
+{
+    cheats_.clear();
+    if (!core_ || cheatPath_.empty())
+        return;
+    std::ifstream input(cheatPath_);
+    if (!input)
+    {
+        LOG_WARN("CHEAT", "Cannot open cheatPath: %s", cheatPath_.c_str());
+        return;
+    }
+
+    // RetroArch's .cht syntax is deliberately used here: it is a stable,
+    // controller-friendly definition format already understood by users and
+    // keeps code strings out of GameDB. Example:
+    // cheats = 1
+    // cheat0_desc = "Infinite health"
+    // cheat0_code = "..."
+    // cheat0_enable = false
+    std::map<size_t, CheatEntry> pending;
+    std::string line;
+    while (std::getline(input, line))
+    {
+        const size_t equals = line.find('=');
+        if (equals == std::string::npos)
+            continue;
+        const std::string key = TrimCheatValue(line.substr(0, equals));
+        const std::string value = TrimCheatValue(line.substr(equals + 1));
+        if (key.rfind("cheat", 0) != 0)
+            continue;
+        const size_t underscore = key.find('_', 5);
+        if (underscore == std::string::npos)
+            continue;
+        size_t index = 0;
+        try { index = static_cast<size_t>(std::stoul(key.substr(5, underscore - 5))); }
+        catch (...) { continue; }
+        CheatEntry &entry = pending[index];
+        const std::string field = key.substr(underscore + 1);
+        if (field == "desc") entry.name = value;
+        else if (field == "code") entry.code = value;
+        else if (field == "enable") entry.enabled = CheatBool(value);
+    }
+    core_->ResetCheats();
+    for (auto &[index, entry] : pending)
+    {
+        if (entry.code.empty())
+            continue;
+        if (entry.name.empty())
+            entry.name = "Cheat " + std::to_string(index + 1);
+        core_->SetCheat(cheats_.size(), entry.enabled, entry.code);
+        cheats_.push_back(std::move(entry));
+    }
+    LOG_INFO("CHEAT", "Loaded %zu cheats from %s", cheats_.size(), cheatPath_.c_str());
+}
+
+bool FlycastRuntime::SaveCheats() const
+{
+    if (cheatPath_.empty())
+        return false;
+    std::ofstream output(cheatPath_, std::ios::trunc);
+    if (!output)
+    {
+        LOG_WARN("CHEAT", "Cannot save cheats: %s", cheatPath_.c_str());
+        return false;
+    }
+    output << "cheats = " << cheats_.size() << "\n";
+    for (size_t i = 0; i < cheats_.size(); ++i)
+    {
+        const CheatEntry &entry = cheats_[i];
+        output << "cheat" << i << "_desc = \"" << entry.name << "\"\n";
+        output << "cheat" << i << "_code = \"" << entry.code << "\"\n";
+        output << "cheat" << i << "_enable = " << (entry.enabled ? "true" : "false") << "\n";
+    }
+    return static_cast<bool>(output);
+}
+
+void FlycastRuntime::SetCheatEnabled(size_t index, bool enabled)
+{
+    if (!core_ || index >= cheats_.size())
+        return;
+    CheatEntry &entry = cheats_[index];
+    entry.enabled = enabled;
+    core_->SetCheat(index, enabled, entry.code);
+    if (SaveCheats())
+        LOG_INFO("CHEAT", "%s: %s", entry.name.c_str(), enabled ? "enabled" : "disabled");
 }
 
 void FlycastRuntime::LoadDiscSession()
@@ -1451,55 +1818,81 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
             {
                 if (!item.is_object())
                     continue;
-                const std::string itemPath = item.value("path", std::string());
+                const std::string itemPath = JsonStringOr(item, "path");
                 if (itemPath != romPath && NormalizeFlycastRomPath(itemPath) != normalized)
                     continue;
                 playStatsFound_ = true;
-                playCount_ = item.value("playCount", 0) + 1;
-                playTimeTotal_ = item.value("playTime", 0);
-                savePath_ = item.value("savePath", std::string());
-                gameDisplayMode_ = item.value("displayMode", -1);
-                gameScreenLayout_ = item.value("ndsScreenLayout", std::string());
-                if (const auto integerScale = item.find("ndsIntegerScale"); integerScale != item.end())
-                {
-                    if (integerScale->is_number_integer() || integerScale->is_number_unsigned())
-                        gameIntegerScale_ = std::clamp(integerScale->get<int>(), 0, 5);
-                    else if (integerScale->is_boolean() && integerScale->get<bool>())
-                        // Older Flycast builds stored this as a boolean. The
-                        // layout field still carries the exact multiplier when
-                        // available, so use 1x only as a safe fallback.
-                        gameIntegerScale_ = 1;
+                playCount_ = JsonIntOr(item, "playCount") + 1;
+                playTimeTotal_ = JsonIntOr(item, "playTime");
+                savePath_ = NormalizeGameDbPath(JsonStringOr(item, "savePath"));
+                gameDisplayMode_ = JsonIntOr(item, "displayMode", -1);
+                gameScreenLayout_ = JsonStringOr(item, "ndsScreenLayout");
+                // A new generic GameDB entry may carry the NDS default
+                // "priority_top". It has the right JSON type but is not a
+                // Flycast viewport value, so treat it as unset rather than
+                // letting it select an unintended scaling mode.
+                if (!IsFlycastScreenLayout(gameScreenLayout_))
+                    gameScreenLayout_.clear();
+                // integerAspectRatio is the schema-approved float used for
+                // the per-game integer multiplier. ndsIntegerScale belongs to
+                // NDS settings and must remain a boolean.
+                const auto storedIntegerScale = item.find("integerAspectRatio");
+                if (storedIntegerScale != item.end() && storedIntegerScale->is_number())
+                    gameIntegerScale_ = std::clamp(static_cast<int>(std::lround(
+                        JsonFloatOr(item, "integerAspectRatio", 1.0f))), 1, 5);
+                else if (const auto legacyScale = item.find("ndsIntegerScale");
+                         legacyScale != item.end() &&
+                         (legacyScale->is_number_integer() || legacyScale->is_number_unsigned()))
+                    // Migration for builds that accidentally wrote a numeric
+                    // multiplier into the boolean NDS field.
+                    gameIntegerScale_ = std::clamp(JsonIntOr(item, "ndsIntegerScale", 1), 1, 5);
+                if (const auto stored = item.find("ndsInternalResolution");
+                    stored != item.end() && (stored->is_number_integer() || stored->is_number_unsigned())) {
+                    gameInternalResolution_ = FlycastResolutionFromGameDbIndex(JsonIntOr(item, "ndsInternalResolution", 2));
+                } else if (const auto old = item.find("reicastInternalResolution");
+                           old != item.end() && old->is_string()) {
+                    // One-way compatibility for builds that wrote the
+                    // non-standard string field. It is removed on the next
+                    // settings save in favour of ndsInternalResolution.
+                    gameInternalResolution_ = old->get<std::string>();
                 }
-                if (const auto it = item.find("reicastInternalResolution");
-                    it != item.end() && it->is_string()) {
-                    gameInternalResolution_ = it->get<std::string>();
-                } else if (const auto legacy = item.find("ndsInternalResolution");
-                           legacy != item.end() && legacy->is_number_integer()) {
-                    // Older generic GameDB entries store a multiplier.  Map it
-                    // to the exact libretro option spelling instead of relying
-                    // on an unsafe JSON string conversion.
-                    static constexpr const char *kResolutionValues[] = {
-                        "320x240", "640x480", "960x720", "1280x960", "1920x1440"};
-                    const int index = std::clamp(legacy->get<int>() - 1, 0, 4);
-                    gameInternalResolution_ = kResolutionValues[index];
-                }
-                gameMaskEnabled_ = item.value("overlayEnabled", false);
-                gameMaskPath_ = item.value("overlayPath", std::string());
-                gameShaderEnabled_ = item.value("shaderEnabled", false);
-                gameShaderPath_ = item.value("shaderPath", std::string());
+                gameMaskEnabled_ = JsonBoolOr(item, "overlayEnabled");
+                gameMaskPath_ = NormalizeGameDbPath(JsonStringOr(item, "overlayPath"));
+                gameShaderEnabled_ = JsonBoolOr(item, "shaderEnabled");
+                gameShaderPath_ = NormalizeGameDbPath(JsonStringOr(item, "shaderPath"));
+                cheatPath_ = NormalizeGameDbPath(JsonStringOr(item, "cheatPath"));
                 if (item.contains("shaderParaNames") && item["shaderParaNames"].is_array())
                     for (const auto &name : item["shaderParaNames"])
                         if (name.is_string()) gameShaderParamNames_.push_back(name.get<std::string>());
                 if (item.contains("shaderParaValues") && item["shaderParaValues"].is_array())
                     for (const auto &value : item["shaderParaValues"])
-                        if (value.is_number()) gameShaderParamValues_.push_back(value.get<float>());
+                        if (value.is_number())
+                        {
+                            const float parsed = value.get<float>();
+                            if (std::isfinite(parsed)) gameShaderParamValues_.push_back(parsed);
+                        }
+                // Repair legacy sdmc-prefixed values during the normal play
+                // counter write, so future launcher reads always see paths in
+                // the documented GameDB form.
+                item["savePath"] = savePath_;
+                item["overlayPath"] = gameMaskPath_;
+                item["shaderPath"] = gameShaderPath_;
+                item["ndsIntegerScale"] = JsonBoolOr(item, "ndsIntegerScale", true);
+                item["integerAspectRatio"] = static_cast<float>(std::max(1, gameIntegerScale_));
+                if (!gameInternalResolution_.empty())
+                    item["ndsInternalResolution"] = GameDbIndexFromFlycastResolution(gameInternalResolution_);
+                // This field belongs to the launcher's legacy parameter-file
+                // workflow. It is intentionally empty in the established
+                // GameDB schema, even when shaderPath is populated.
+                item["shaderParaPath"] = "";
                 item["playCount"] = playCount_;
                 // Close the read stream first: the Switch stdio/fs layer refuses a
                 // second handle (write/trunc) on a file that is still open for read.
                 file.close();
-                std::ofstream out(dbPath, std::ios::trunc);
-                if (out) {
-                    out << data.dump(4);
+                if (WriteGameDbAtomically(dbPath, data)) {
+                    LOG_INFO("HOME", "GameDB loaded path=%s mode=%d layout=%s integer=%d resolution=%s overlay=%d shader=%d",
+                             itemPath.c_str(), gameDisplayMode_, gameScreenLayout_.c_str(), gameIntegerScale_,
+                             gameInternalResolution_.c_str(), gameMaskEnabled_ ? 1 : 0, gameShaderEnabled_ ? 1 : 0);
                     LOG_INFO("HOME", "GBAStation play stats start playCount=%d playTime=%d", playCount_, playTimeTotal_);
                 } else {
                     LOG_WARN("HOME", "GBAStation play stats write failed: %s", dbPath);
@@ -1533,31 +1926,44 @@ void FlycastRuntime::SaveFlycastDisplaySettings()
                 continue;
             for (auto &item : data)
             {
-                const std::string itemPath = item.value("path", std::string());
-                if (!item.is_object() || (itemPath != romPath_ && NormalizeFlycastRomPath(itemPath) != normalized))
+                if (!item.is_object())
+                    continue;
+                const std::string itemPath = JsonStringOr(item, "path");
+                if (itemPath != romPath_ && NormalizeFlycastRomPath(itemPath) != normalized)
                     continue;
                 item["displayMode"] = overlay_->GetGameDisplayModeIndex();
                 item["ndsScreenLayout"] = overlay_->GetGameScreenLayout();
-                item["ndsIntegerScale"] = overlay_->GetGameIntegerScale();
-                if (overlayHost_)
-                    item["reicastInternalResolution"] = overlayHost_->GetCoreOption("reicast_internal_resolution", "640x480");
+                // The launcher deserializes this field as bool. It is NDS
+                // metadata, not Flycast's 1x-5x integer multiplier.
+                item["ndsIntegerScale"] = JsonBoolOr(item, "ndsIntegerScale", true);
+                item["integerAspectRatio"] = static_cast<float>(std::max(1, overlay_->GetGameIntegerScale()));
+                const std::string internalResolution = overlayHost_
+                    ? overlayHost_->GetCoreOption("reicast_internal_resolution", "640x480")
+                    : gameInternalResolution_;
+                item["ndsInternalResolution"] = GameDbIndexFromFlycastResolution(internalResolution);
+                item.erase("reicastInternalResolution");
+                item["savePath"] = NormalizeGameDbPath(JsonStringOr(item, "savePath", savePath_));
                 item["overlayEnabled"] = overlay_->IsMaskEnabled();
-                item["overlayPath"] = overlay_->MaskPath();
+                item["overlayPath"] = NormalizeGameDbPath(overlay_->MaskPath());
                 item["shaderEnabled"] = overlay_->IsShaderEnabled();
-                item["shaderPath"] = overlay_->ShaderPath();
-                item["shaderParaPath"] = overlay_->ShaderPath();
+                item["shaderPath"] = NormalizeGameDbPath(overlay_->ShaderPath());
+                item["shaderParaPath"] = "";
                 item["shaderParaNames"] = nlohmann::json::array();
                 item["shaderParaValues"] = nlohmann::json::array();
                 for (const GBAStationSlang::Parameter &parameter : overlay_->ShaderParameters())
                 {
-                    if (!parameter.editable) continue;
+                    if (!parameter.editable || !std::isfinite(parameter.value)) continue;
                     item["shaderParaNames"].push_back(parameter.id);
                     item["shaderParaValues"].push_back(parameter.value);
                 }
                 file.close();
-                std::ofstream out(dbPath, std::ios::trunc);
-                if (out)
-                    out << data.dump(4);
+                if (!WriteGameDbAtomically(dbPath, data))
+                    LOG_WARN("HOME", "GBAStation display settings write failed: %s", dbPath);
+                else
+                    LOG_INFO("HOME", "GameDB saved path=%s mode=%d layout=%s integer=%d resolution=%d overlay=%d shader=%d",
+                             itemPath.c_str(), overlay_->GetGameDisplayModeIndex(), overlay_->GetGameScreenLayout(),
+                             static_cast<int>(std::max(1, overlay_->GetGameIntegerScale())), GameDbIndexFromFlycastResolution(internalResolution),
+                             overlay_->IsMaskEnabled() ? 1 : 0, overlay_->IsShaderEnabled() ? 1 : 0);
                 return;
             }
         }
@@ -1565,6 +1971,108 @@ void FlycastRuntime::SaveFlycastDisplaySettings()
         {
         }
     }
+}
+
+namespace
+{
+template <typename Apply>
+void SyncFlycastGameDb(const std::string &currentRom, Apply apply, const char *label)
+{
+    const char *dbPaths[] = {"sdmc:/GBAStation/data/GameData_DC.json", "/GBAStation/data/GameData_DC.json"};
+    const std::string current = NormalizeFlycastRomPath(currentRom);
+    for (const char *dbPath : dbPaths)
+    {
+        std::ifstream file(dbPath, std::ios::binary);
+        if (!file)
+            continue;
+        try
+        {
+            nlohmann::json data;
+            file >> data;
+            if (!data.is_array())
+                continue;
+            int updated = 0;
+            for (auto &item : data)
+            {
+                if (!item.is_object())
+                    continue;
+                const std::string itemPath = JsonStringOr(item, "path");
+                if (NormalizeFlycastRomPath(itemPath) == current)
+                    continue; // current entry already owns the source values
+                apply(item);
+                ++updated;
+            }
+            file.close();
+            if (WriteGameDbAtomically(dbPath, data))
+                LOG_INFO("HOME", "GameDB synced %s to %d other entries", label, updated);
+            else
+                LOG_WARN("HOME", "GameDB %s sync write failed: %s", label, dbPath);
+            return;
+        }
+        catch (...)
+        {
+            LOG_WARN("HOME", "GameDB %s sync parse failed: %s", label, dbPath);
+        }
+    }
+}
+} // namespace
+
+void FlycastRuntime::SyncFlycastDisplaySettings()
+{
+    if (!overlay_ || romPath_.empty())
+        return;
+    const int mode = overlay_->GetGameDisplayModeIndex();
+    const std::string layout = overlay_->GetGameScreenLayout();
+    const float integerScale = static_cast<float>(std::max(1, overlay_->GetGameIntegerScale()));
+    const std::string resolution = overlayHost_
+        ? overlayHost_->GetCoreOption("reicast_internal_resolution", "640x480")
+        : gameInternalResolution_;
+    const int resolutionIndex = GameDbIndexFromFlycastResolution(resolution);
+    SyncFlycastGameDb(romPath_, [=](nlohmann::json &item) {
+        item["displayMode"] = mode;
+        item["ndsScreenLayout"] = layout;
+        item["integerAspectRatio"] = integerScale;
+        item["ndsInternalResolution"] = resolutionIndex;
+        // Do not write a multiplier into this schema-defined boolean.
+        item["ndsIntegerScale"] = JsonBoolOr(item, "ndsIntegerScale", true);
+        item.erase("reicastInternalResolution");
+    }, "display settings");
+}
+
+void FlycastRuntime::SyncFlycastMaskSettings()
+{
+    if (!overlay_ || romPath_.empty())
+        return;
+    const bool enabled = overlay_->IsMaskEnabled();
+    const std::string path = NormalizeGameDbPath(overlay_->MaskPath());
+    SyncFlycastGameDb(romPath_, [=](nlohmann::json &item) {
+        item["overlayEnabled"] = enabled;
+        item["overlayPath"] = path;
+    }, "mask settings");
+}
+
+void FlycastRuntime::SyncFlycastShaderSettings()
+{
+    if (!overlay_ || romPath_.empty())
+        return;
+    const bool enabled = overlay_->IsShaderEnabled();
+    const std::string path = NormalizeGameDbPath(overlay_->ShaderPath());
+    nlohmann::json names = nlohmann::json::array();
+    nlohmann::json values = nlohmann::json::array();
+    for (const GBAStationSlang::Parameter &parameter : overlay_->ShaderParameters())
+    {
+        if (!parameter.editable || !std::isfinite(parameter.value))
+            continue;
+        names.push_back(parameter.id);
+        values.push_back(parameter.value);
+    }
+    SyncFlycastGameDb(romPath_, [=](nlohmann::json &item) {
+        item["shaderEnabled"] = enabled;
+        item["shaderPath"] = path;
+        item["shaderParaPath"] = "";
+        item["shaderParaNames"] = names;
+        item["shaderParaValues"] = values;
+    }, "shader settings");
 }
 
 void FlycastRuntime::SaveFlycastPlayStats(const std::string &romPath)
@@ -1596,7 +2104,7 @@ void FlycastRuntime::SaveFlycastPlayStats(const std::string &romPath)
             {
                 if (!item.is_object())
                     continue;
-                const std::string itemPath = item.value("path", std::string());
+                const std::string itemPath = JsonStringOr(item, "path");
                 if (itemPath != romPath && NormalizeFlycastRomPath(itemPath) != normalized)
                     continue;
                 item["playCount"] = playCount_;
@@ -1605,9 +2113,7 @@ void FlycastRuntime::SaveFlycastPlayStats(const std::string &romPath)
                 // Close the read stream first: the Switch stdio/fs layer refuses a
                 // second handle (write/trunc) on a file that is still open for read.
                 file.close();
-                std::ofstream out(dbPath, std::ios::trunc);
-                if (out) {
-                    out << data.dump(4);
+                if (WriteGameDbAtomically(dbPath, data)) {
                     LOG_INFO("HOME", "GBAStation play stats exit playCount=%d playTime=%d lastPlayed=%s", playCount_, totalPlayTime, lastPlayed.c_str());
                 } else {
                     LOG_WARN("HOME", "GBAStation play stats write failed: %s", dbPath);

@@ -53,6 +53,7 @@ enum PadButton : uint64_t
     // controller.  They carry GBAStation's configurable frontend hotkeys.
     Pad_Guide  = 1ull << 16, // menu hotkey
     Pad_FastForward = 1ull << 17,
+    Pad_Rewind = 1ull << 18,
 };
 
 /// One frame's worth of neutralized input. `pressed`/`released` are the edges
