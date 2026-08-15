@@ -711,6 +711,7 @@ bool FlycastRuntime::InitOverlay(const std::string &romPath)
     overlay_->SetGameTitle(titleArg_.empty() ? GameTitleFromPath(romPath) : titleArg_);
     overlay_->SetGameDisplaySettings(gameDisplayMode_, gameScreenLayout_, gameInternalResolution_);
     overlay_->SetMaskSettings(gameMaskEnabled_, gameMaskPath_);
+    overlay_->SetShaderSettings(gameShaderEnabled_, gameShaderPath_);
     overlayReady_ = true;
     LOG_INFO("OVERLAY", "GBAStation overlay initialized");
     return true;
@@ -780,8 +781,10 @@ void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_Y, down(Pad_Y));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L, down(Pad_L));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R, down(Pad_R));
-        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L2, down(Pad_L));   // DC left trigger
-        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R2, down(Pad_R));   // DC right trigger
+        // Preserve the classic L/R defaults while allowing dedicated ZL/ZR
+        // bindings through dc.handle.l2 / dc.handle.r2.
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_L2, down(Pad_L) || down(Pad_L2)); // DC left trigger
+        core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_R2, down(Pad_R) || down(Pad_R2)); // DC right trigger
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_START, down(Pad_Start));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_SELECT, down(Pad_Select));
         core_->SetInputState(port, RETRO_DEVICE_ID_JOYPAD_UP, down(Pad_Up));
@@ -1061,6 +1064,19 @@ static void ScaleRgbaForThumb(const uint8_t *src, int sw, int sh, std::vector<ui
 }
 void FlycastRuntime::CaptureMenuThumbnailToMemory()
 {
+#ifdef __SWITCH__
+    // NVK/VI cannot safely re-submit a swapchain image that has already been
+    // handed to present. The old readback raced the presentation engine and
+    // poisoned the shared queue; the next overlay texture upload (typically a
+    // newly selected mask) then failed with VK_ERROR_DEVICE_LOST. State
+    // thumbnails are optional, so keep the GPU path stable until capture is
+    // implemented from a dedicated offscreen image.
+    m_thumbMemory_.clear();
+    m_thumbW_ = 0;
+    m_thumbH_ = 0;
+    LOG_INFO("CORE", "Menu thumbnail capture skipped on Switch Vulkan");
+    return;
+#endif
     std::vector<uint8_t> rgba;
     uint32_t w = 0, h = 0;
     if (!GBAStationVulkan::CaptureCurrentFrameRGBA(rgba, w, h) || w == 0 || h == 0)
@@ -1406,6 +1422,8 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
     gameInternalResolution_.clear();
     gameMaskEnabled_ = false;
     gameMaskPath_.clear();
+    gameShaderEnabled_ = false;
+    gameShaderPath_.clear();
     if (romPath.empty())
         return;
 
@@ -1453,6 +1471,8 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
                 }
                 gameMaskEnabled_ = item.value("overlayEnabled", false);
                 gameMaskPath_ = item.value("overlayPath", std::string());
+                gameShaderEnabled_ = item.value("shaderEnabled", false);
+                gameShaderPath_ = item.value("shaderPath", std::string());
                 item["playCount"] = playCount_;
                 // Close the read stream first: the Switch stdio/fs layer refuses a
                 // second handle (write/trunc) on a file that is still open for read.
@@ -1503,6 +1523,8 @@ void FlycastRuntime::SaveFlycastDisplaySettings()
                     item["reicastInternalResolution"] = overlayHost_->GetCoreOption("reicast_internal_resolution", "640x480");
                 item["overlayEnabled"] = overlay_->IsMaskEnabled();
                 item["overlayPath"] = overlay_->MaskPath();
+                item["shaderEnabled"] = overlay_->IsShaderEnabled();
+                item["shaderPath"] = overlay_->ShaderPath();
                 file.close();
                 std::ofstream out(dbPath, std::ios::trunc);
                 if (out)

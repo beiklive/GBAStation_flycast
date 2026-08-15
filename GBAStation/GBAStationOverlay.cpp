@@ -12,6 +12,8 @@
 #include "GBAStationOverlay.h"
 #include "GBAStationAudio.h"
 #include "GBAStationConfig.h"
+#include "GBAStationLogger.h"
+#include "GBAStationSlangPreset.h"
 #include "GBAStationTranslationManager.h"
 #include <algorithm>
 #include <cmath>
@@ -1088,6 +1090,10 @@ void GBAStationOverlay::RenderTitleCard(ImDrawList *dl, ImVec2 displaySize)
     {
         titleStr = tr("emulator_select_disc");
     }
+    else if (m_currentMenu == OverlayMenu::MaskSelect)
+    {
+        titleStr = m_assetPickerShader ? tr("选择着色器") : tr("选择遮罩图片");
+    }
 
     // The launcher bakes newlines into the title for its own wrapping; flatten
     // them so we can re-wrap and center each line ourselves.
@@ -1219,6 +1225,11 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         RenderDiscBrowser(dl, displaySize);
         return;
     }
+    if (m_currentMenu == OverlayMenu::MaskSelect)
+    {
+        RenderMaskBrowser(dl, displaySize);
+        return;
+    }
 
     // Sidebar
     const float sidebarX = 48.0f * scale;
@@ -1250,7 +1261,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         // baseline (y + 38 for a 58px row).  Compensate so the text is
         // vertically centered like the icon beside it.
         const float textY = y + itemH * 0.5f - 21.0f * scale * 0.43f;
-        dl->AddText(font, 25.0f * scale, ImVec2(sidebarX + 34.0f * scale, y + itemH * 0.5f - 12.5f * scale),
+        dl->AddText(font, 25.0f * scale, ImVec2(sidebarX + 34.0f * scale, y + itemH * 0.5f - 9.5f * scale),
                     selected ? white : muted, iconBuf);
         dl->AddText(font, 21.0f * scale, ImVec2(sidebarX + 64.0f * scale, textY),
                     selected ? white : muted, tabs[i].c_str());
@@ -1293,7 +1304,7 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
             dl->AddRect(rowMin, rowMax, rowBorder, 0.0f, 0, 1.0f * scale);
         }
         // AddText's y is the glyph top: compensate for the 3DS baseline (y+32).
-        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 24.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.43f),
+        dl->AddText(font, 20.0f * scale, ImVec2(contentX + 24.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.43f + 2.0f * scale),
                     selector ? cyan : (focused ? white : muted), iconUtf8);
         dl->AddText(font, 20.0f * scale, ImVec2(contentX + 46.0f * scale, y + rowH * 0.5f - 20.0f * scale * 0.43f),
                     focused ? white : muted, label.c_str());
@@ -1350,6 +1361,19 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
             dl->AddText(font, 18.0f * scale, ImVec2(contentX + contentW - valueW - 18.0f * scale, y + rowH * 0.5f - 18.0f * scale * 0.43f),
                         cyan, value.c_str());
         }
+    };
+
+    auto drawSectionHeader = [&](int row, const std::string &label) {
+        const float y = viewTop + row * (rowH + rowGap);
+        const float lineY = y + rowH * 0.5f;
+        const ImVec2 labelSize = font->CalcTextSizeA(16.0f * scale, FLT_MAX, 0.0f, label.c_str());
+        const float labelX = contentX + (contentW - labelSize.x) * 0.5f;
+        dl->AddLine(ImVec2(contentX, lineY), ImVec2(contentX + contentW, lineY),
+                    IM_COL32(92, 166, 218, static_cast<int>(120.0f * ease)), 1.0f * scale);
+        dl->AddRectFilled(ImVec2(labelX - 12.0f * scale, lineY - 13.0f * scale),
+                          ImVec2(labelX + labelSize.x + 12.0f * scale, lineY + 13.0f * scale),
+                          IM_COL32(17, 29, 43, static_cast<int>(230.0f * ease)));
+        dl->AddText(font, 16.0f * scale, ImVec2(labelX, lineY - 16.0f * scale * 0.43f), cyan, label.c_str());
     };
 
     const bool inContent = !m_sidebarFocused;
@@ -1488,82 +1512,63 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
         }
         else if (activeTab == 4)
         {
-            // 画面设置: 渲染相关 + 显示模式/比例。
-            const std::string labels[] = {tr("渲染分辨率"), tr("纹理过滤"), tr("各向异性过滤"), tr("Mip 贴图"), tr("自动跳帧"), tr("帧跳过"), tr("宽屏修正"), tr("显示模式"), tr("画面比例"), tr("遮罩")};
-            const char *keys[] = {"reicast_internal_resolution", "reicast_texture_filtering", "reicast_anisotropic_filtering", "reicast_mipmapping", "reicast_auto_skip_frame", "reicast_frame_skipping", "reicast_widescreen_hack", "", "", ""};
-            const int rowIcons[] = {0xE333, 0xE3F4, 0xE3F4, 0xE873, 0xE8E5, 0xE8E5, 0xE3B6, 0xE8F1, 0xE3F4, 0xE3B6};
-            const int total = 10;
-            const int visible = std::min(8, total);
-            const int first = std::clamp(m_settingsSelection - visible / 2, 0, std::max(0, total - visible));
-            const std::string mode = m_displayMode == FlycastDisplayMode::Integer ? tr("整数缩放") : tr("比例显示");
-            std::string size = tr("原始比例");
-            if (m_displayMode == FlycastDisplayMode::Integer)
-                size = m_displaySize == FlycastDisplaySize::_1x ? "1x" : m_displaySize == FlycastDisplaySize::_2x ? "2x" : tr("自动");
-            else if (m_displaySize == FlycastDisplaySize::Stretch) size = tr("拉伸");
-            else if (m_displaySize == FlycastDisplaySize::_4_3) size = "4:3";
-            else if (m_displaySize == FlycastDisplaySize::_16_9) size = "16:9";
-            for (int row = 0; row < visible; ++row)
+            constexpr int selectedRows[] = {1, 2, 3, 4, 6, 7, 9, 10, 11};
+            constexpr int totalRows = 12;
+            constexpr int visible = 8;
+            const int selectedRow = selectedRows[m_settingsSelection];
+            const int first = std::clamp(selectedRow - visible / 2, 0, totalRows - visible);
+            const std::string labels[] = {tr("渲染分辨率"), tr("显示模式"), tr("显示比例"), tr("整数倍数"),
+                                          tr("遮罩设置"), tr("着色器设置"), tr("同步画面设置"), tr("同步遮罩设置"), tr("同步着色器设置")};
+            const int icons[] = {0xE333, 0xE8F1, 0xE3F4, 0xE8B2, 0xE3B0, 0xE3B6, 0xE8E5, 0xE8E5, 0xE8E5};
+            for (int sourceRow = first; sourceRow < first + visible; ++sourceRow)
             {
-                const int option = first + row;
+                const int row = sourceRow - first;
+                if (sourceRow == 0) { drawSectionHeader(row, tr("画面相关")); continue; }
+                if (sourceRow == 5) { drawSectionHeader(row, tr("美化相关")); continue; }
+                if (sourceRow == 8) { drawSectionHeader(row, tr("同步设置")); continue; }
+                const int option = sourceRow == 1 ? 0 : sourceRow == 2 ? 1 : sourceRow == 3 ? 2 : sourceRow == 4 ? 3 :
+                                   sourceRow == 6 ? 4 : sourceRow == 7 ? 5 : sourceRow == 9 ? 6 : sourceRow == 10 ? 7 : 8;
+                const bool selector = option <= 3;
                 std::string value;
-                if (option == 7)
-                {
-                    value = mode;
-                }
-                else if (option == 8)
-                {
-                    value = size;
-                }
-                else if (option == 9)
-                {
-                    value = m_maskEnabled ? tr("开启") : tr("关闭");
-                    if (m_maskPath.empty())
-                        value += tr("（未设置路径）");
-                }
-                else
-                {
-                    value = m_host ? m_host->GetCoreOption(keys[option], tr("自动")) : tr("自动");
-                    // These are documented "only apply after restarting" in the
-                    // core's option metadata (texture/anisotropic filtering).
-                    if (option == 1 || option == 2)
-                        value += tr("（重启后生效）");
-                }
+                if (option == 0) value = m_host ? m_host->GetCoreOption("reicast_internal_resolution", "640x480") : "640x480";
+                else if (option == 1) value = m_displayMode == FlycastDisplayMode::Integer ? tr("整数倍缩放") : tr("适应屏幕");
+                else if (option == 2) value = m_displaySize == FlycastDisplaySize::_16_9 ? "16:9" : "4:3";
+                else if (option == 3) value = std::to_string(std::clamp(static_cast<int>(m_displaySize) - 3, 1, 5)) + "x";
+                else if (option == 4 || option == 5) value = ">";
+                else value = tr("同步当前设置");
                 char icon[8];
-                EncodeUtf8(icon, rowIcons[option]);
-                drawRow(row, inContent && option == m_settingsSelection, icon, labels[option], value,
-                        true);
+                EncodeUtf8(icon, icons[option]);
+                drawRow(row, inContent && option == m_settingsSelection, icon, labels[option], value, selector);
             }
         }
         else if (activeTab == 5)
         {
-            // 功能设置: 线程/快进等非画面项目。
-            const std::string labels[] = {tr("多线程渲染"), tr("快进倍率"), tr("快进模式")};
-            const char *keys[] = {"reicast_threaded_rendering", "", ""};
-            const int rowIcons[] = {0xE8B8, 0xE8B2, 0xE8B8};
-            const int total = 3;
-            const int visible = std::min(8, total);
-            const int first = std::clamp(m_settingsSelection - visible / 2, 0, std::max(0, total - visible));
-            for (int row = 0; row < visible; ++row)
+            constexpr int totalRows = 6;
+            const int first = 0;
+            const std::string labels[] = {tr("快进倍率"), tr("快进模式"), tr("自动跳帧"), tr("帧跳过")};
+            for (int sourceRow = first; sourceRow < first + totalRows; ++sourceRow)
             {
-                const int option = first + row;
+                const int row = sourceRow - first;
+                if (sourceRow == 0) { drawSectionHeader(row, tr("快进相关")); continue; }
+                if (sourceRow == 3) { drawSectionHeader(row, tr("调试相关")); continue; }
+                const int option = sourceRow < 3 ? sourceRow - 1 : sourceRow - 2;
                 std::string value;
-                if (option == 1)
+                if (option == 0)
                 {
                     char buf[16];
                     std::snprintf(buf, sizeof(buf), "%dx", static_cast<int>(m_host ? m_host->GetFastForwardMultiplier() : 2.0f));
                     value = buf;
                 }
-                else if (option == 2)
+                else if (option == 1)
                 {
                     value = m_host && m_host->GetFastForwardToggleMode() ? tr("切换") : tr("按住");
                 }
+                else if (option == 2)
+                    value = m_host ? m_host->GetCoreOption("reicast_auto_skip_frame", tr("自动")) : tr("自动");
                 else
-                {
-                    value = m_host ? m_host->GetCoreOption(keys[option], tr("自动")) : tr("自动");
-                    value += tr("（重启后生效）");
-                }
+                    value = m_host ? m_host->GetCoreOption("reicast_frame_skipping", "disabled") : "disabled";
                 char icon[8];
-                EncodeUtf8(icon, rowIcons[option]);
+                EncodeUtf8(icon, option < 2 ? 0xE8B2 : 0xE8E5);
                 drawRow(row, inContent && option == m_settingsSelection, icon, labels[option], value,
                         true);
             }
@@ -2092,6 +2097,92 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         return true;
     }
 
+    if (m_currentMenu == OverlayMenu::MaskSelect)
+    {
+        const int count = static_cast<int>(m_maskBrowserEntries.size());
+        if (count > 0 && (upPressed || downPressed))
+        {
+            m_maskBrowserSelection = (m_maskBrowserSelection + (upPressed ? count - 1 : 1)) % count;
+            const float rowH = 58.0f * OverlayScale();
+            const float contentH = 520.0f * OverlayScale();
+            const float maxScroll = std::max(0.0f, count * rowH - contentH);
+            m_maskBrowserTargetScrollY = std::clamp(m_maskBrowserSelection * rowH - contentH * 0.5f + rowH * 0.5f,
+                                                     0.0f, maxScroll);
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
+        }
+        if (confirmPressed && count > 0)
+        {
+            const MaskBrowserEntry &entry = m_maskBrowserEntries[m_maskBrowserSelection];
+            if (entry.isDir)
+            {
+                m_maskBrowserDir = entry.path;
+                RefreshMaskBrowser();
+                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
+            }
+            else
+            {
+                if (m_assetPickerShader)
+                {
+                    GBAStationSlang::Preset preset;
+                    std::string error;
+                    if (!GBAStationSlang::Load(entry.path, preset, error))
+                    {
+                        m_discBrowserNotice = error;
+                        m_discBrowserNoticeTimer = 3.0f;
+                        GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
+                        return true;
+                    }
+                    LOG_INFO("SLANG", "Preset validated: passes=%zu parameters=%zu path=%s",
+                             preset.passes.size(), preset.parameters.size(), entry.path.c_str());
+                    for (size_t passIndex = 0; passIndex < preset.passes.size(); ++passIndex)
+                    {
+                        const GBAStationSlang::Pass &pass = preset.passes[passIndex];
+                        LOG_INFO("SLANG", " pass %zu: %s vert=%zu words frag=%zu words samplers=%zu push=%zu",
+                                 passIndex, pass.path.c_str(), pass.vertexSpirv.size(),
+                                 pass.fragmentSpirv.size(), pass.samplers.size(), pass.pushConstants.size());
+                    }
+                    for (const GBAStationSlang::Parameter &parameter : preset.parameters)
+                        LOG_INFO("SLANG", " param %s -> %s value=%g initial=%g range=[%g,%g] step=%g editable=%d",
+                                 parameter.id.c_str(), parameter.runtimeId.c_str(), parameter.value,
+                                 parameter.initial, parameter.minimum, parameter.maximum, parameter.step,
+                                 parameter.editable ? 1 : 0);
+                    for (const std::string &warning : preset.warnings)
+                        LOG_WARN("SLANG", "%s", warning.c_str());
+                    SetShaderPreset(true, std::move(preset));
+                }
+                else
+                    SetMaskSettings(true, entry.path);
+                m_gameDisplaySettingsSaveRequested = true;
+                m_currentMenu = OverlayMenu::Settings;
+                m_quickMenuSelection = 4;
+                m_settingsSelection = m_assetPickerShader ? 5 : 4;
+                m_sidebarFocused = false;
+                m_animTimer = 0.4f;
+                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
+            }
+        }
+        if (backPressed)
+        {
+            if (NormalizeDiscPath(m_maskBrowserDir) != NormalizeDiscPath(m_maskBrowserRoot))
+            {
+                const size_t slash = m_maskBrowserDir.find_last_of("/\\");
+                m_maskBrowserDir = slash == std::string::npos ? m_maskBrowserRoot : m_maskBrowserDir.substr(0, slash);
+                if (NormalizeDiscPath(m_maskBrowserDir).size() < NormalizeDiscPath(m_maskBrowserRoot).size())
+                    m_maskBrowserDir = m_maskBrowserRoot;
+                RefreshMaskBrowser();
+            }
+            else
+            {
+                m_currentMenu = OverlayMenu::Settings;
+                m_quickMenuSelection = 4;
+                m_settingsSelection = m_assetPickerShader ? 5 : 4;
+                m_sidebarFocused = false;
+            }
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
+        }
+        return true;
+    }
+
     // The sidebar owns navigation until Right explicitly enters the active
     // page. Switching a tab is immediate: the right panel changes before any
     // confirmation is required.
@@ -2195,7 +2286,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            const int settingCount = m_quickMenuSelection == 4 ? 10 : (m_quickMenuSelection == 5 ? 3 : (m_quickMenuSelection == 3 ? 1 : 2));
+            const int settingCount = m_quickMenuSelection == 4 ? 9 : (m_quickMenuSelection == 5 ? 4 : (m_quickMenuSelection == 3 ? 1 : 2));
             m_settingsSelection = (m_settingsSelection + settingCount - 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
@@ -2230,7 +2321,7 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         }
         else if (m_currentMenu == OverlayMenu::Settings)
         {
-            const int settingCount = m_quickMenuSelection == 4 ? 10 : (m_quickMenuSelection == 5 ? 3 : (m_quickMenuSelection == 3 ? 1 : 2));
+            const int settingCount = m_quickMenuSelection == 4 ? 9 : (m_quickMenuSelection == 5 ? 4 : (m_quickMenuSelection == 3 ? 1 : 2));
             m_settingsSelection = (m_settingsSelection + 1) % settingCount;
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
         }
@@ -2286,62 +2377,44 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, direction);
                 m_gameDisplaySettingsSaveRequested = true;
                 break;
-            case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2"}, direction); break;
-            case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"off", "2", "4", "8", "16"}, direction); break;
-            case 3: CycleFlycastOption(m_host, "reicast_mipmapping", {"disabled", "enabled"}, direction); break;
-            case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, direction); break;
-            case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, direction); break;
-            case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, direction); break;
-            case 7:
+            case 1:
             {
-                // Display Mode: toggle Integer ↔ Display
                 if (m_displayMode == FlycastDisplayMode::Display)
                     m_displayMode = FlycastDisplayMode::Integer;
                 else
                     m_displayMode = FlycastDisplayMode::Display;
                 if (m_displayMode == FlycastDisplayMode::Integer)
-                    m_displaySize = FlycastDisplaySize::Auto;
+                    m_displaySize = FlycastDisplaySize::_1x;
                 else
                     m_displaySize = FlycastDisplaySize::_4_3;
                 ApplyScalingSettings(true);
                 m_gameDisplaySettingsSaveRequested = true;
                 break;
             }
-            case 8:
+            case 2:
             {
-                // Size: cycle through context-dependent options
-                if (m_displayMode == FlycastDisplayMode::Integer)
-                {
-                    int s = (int)m_displaySize;
-                    s += direction;
-                    if (s < 4) s = 6;
-                    if (s > 6) s = 4;
-                    m_displaySize = (FlycastDisplaySize)s;
-                }
-                else
-                {
-                    int s = (int)m_displaySize;
-                    s += direction;
-                    if (s < 0) s = 3;
-                    if (s > 3) s = 0;
-                    m_displaySize = (FlycastDisplaySize)s;
-                }
+                if (m_displayMode == FlycastDisplayMode::Display)
+                    m_displaySize = m_displaySize == FlycastDisplaySize::_4_3 ? FlycastDisplaySize::_16_9 : FlycastDisplaySize::_4_3;
+                break;
+            }
+            case 3:
+            {
+                if (m_displayMode != FlycastDisplayMode::Integer)
+                    break;
+                int scale = std::clamp(static_cast<int>(m_displaySize) - 3, 1, 5);
+                scale = (scale + direction + 4) % 5 + 1;
+                m_displaySize = static_cast<FlycastDisplaySize>(scale + 3);
                 ApplyScalingSettings(true);
                 m_gameDisplaySettingsSaveRequested = true;
                 break;
             }
-            case 9:
-                m_maskEnabled = !m_maskEnabled;
-                m_gameDisplaySettingsSaveRequested = true;
-                break;
             }
         }
         else if (m_quickMenuSelection == 5)
         {
             switch (m_settingsSelection)
             {
-            case 0: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, direction); break;
-            case 1: {
+            case 0: {
                 static const float kMultipliers[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
                 constexpr int kCount = 5;
                 float cur = m_host ? m_host->GetFastForwardMultiplier() : 2.0f;
@@ -2355,10 +2428,12 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                     m_host->SetFastForwardMultiplier(kMultipliers[idx]);
                 break;
             }
-            case 2:
+            case 1:
                 if (m_host)
                     m_host->SetFastForwardToggleMode(!m_host->GetFastForwardToggleMode());
                 break;
+            case 2: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, direction); break;
+            case 3: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, direction); break;
             }
         }
         else if (m_settingsSelection == 0)
@@ -2483,20 +2558,35 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                 switch (m_settingsSelection)
                 {
                 case 0: CycleFlycastOption(m_host, "reicast_internal_resolution", {"320x240", "640x480", "960x720", "1280x960", "1920x1440"}, 1); break;
-                case 1: CycleFlycastOption(m_host, "reicast_texture_filtering", {"0", "1", "2"}, 1); break;
-                case 2: CycleFlycastOption(m_host, "reicast_anisotropic_filtering", {"off", "2", "4", "8", "16"}, 1); break;
-                case 3: CycleFlycastOption(m_host, "reicast_mipmapping", {"disabled", "enabled"}, 1); break;
-                case 4: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, 1); break;
-                case 5: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, 1); break;
-                case 6: CycleFlycastOption(m_host, "reicast_widescreen_hack", {"disabled", "enabled"}, 1); break;
+                case 1:
+                    m_displayMode = m_displayMode == FlycastDisplayMode::Display ? FlycastDisplayMode::Integer : FlycastDisplayMode::Display;
+                    m_displaySize = m_displayMode == FlycastDisplayMode::Integer ? FlycastDisplaySize::_1x : FlycastDisplaySize::_4_3;
+                    ApplyScalingSettings(true); m_gameDisplaySettingsSaveRequested = true; break;
+                case 2:
+                    if (m_displayMode == FlycastDisplayMode::Display) { m_displaySize = m_displaySize == FlycastDisplaySize::_4_3 ? FlycastDisplaySize::_16_9 : FlycastDisplaySize::_4_3; ApplyScalingSettings(true); m_gameDisplaySettingsSaveRequested = true; }
+                    break;
+                case 3:
+                    if (m_displayMode == FlycastDisplayMode::Integer) { int scale = std::clamp(static_cast<int>(m_displaySize) - 3, 1, 5); m_displaySize = static_cast<FlycastDisplaySize>((scale % 5) + 4); ApplyScalingSettings(true); m_gameDisplaySettingsSaveRequested = true; }
+                    break;
+                case 4:
+                    OpenMaskBrowser(false);
+                    m_currentMenu = OverlayMenu::MaskSelect;
+                    m_sidebarFocused = false;
+                    m_animTimer = 0.4f;
+                    return true;
+                case 5:
+                    OpenMaskBrowser(true);
+                    m_currentMenu = OverlayMenu::MaskSelect;
+                    m_sidebarFocused = false;
+                    m_animTimer = 0.4f;
+                    return true;
                 }
             }
             else if (m_quickMenuSelection == 5)
             {
                 switch (m_settingsSelection)
                 {
-                case 0: CycleFlycastOption(m_host, "reicast_threaded_rendering", {"disabled", "enabled"}, 1); break;
-                case 1: {
+                case 0: {
                     static const float kMultipliers[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
                     constexpr int kCount = 5;
                     float cur = m_host ? m_host->GetFastForwardMultiplier() : 2.0f;
@@ -2510,10 +2600,12 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                         m_host->SetFastForwardMultiplier(kMultipliers[idx]);
                     break;
                 }
-                case 2:
+                case 1:
                     if (m_host)
                         m_host->SetFastForwardToggleMode(!m_host->GetFastForwardToggleMode());
                     break;
+                case 2: CycleFlycastOption(m_host, "reicast_auto_skip_frame", {"disabled", "some", "more"}, 1); break;
+                case 3: CycleFlycastOption(m_host, "reicast_frame_skipping", {"disabled", "1", "2", "3", "4", "5", "6"}, 1); break;
                 }
             }
             // Confirm acts like Right.
@@ -2664,6 +2756,143 @@ void GBAStationOverlay::OpenDiscBrowser()
         m_discBrowserDir = "sdmc:/GBAStation/roms";
     m_discBrowserRoot = m_discBrowserDir;
     RefreshDiscBrowser();
+}
+
+static bool IsMaskImagePath(const std::string &path)
+{
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos)
+        return false;
+    std::string extension = path.substr(dot);
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension == ".png" || extension == ".jpg" || extension == ".jpeg" ||
+           extension == ".bmp" || extension == ".tga" || extension == ".webp";
+}
+
+static bool IsSlangPresetPath(const std::string &path)
+{
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos)
+        return false;
+    std::string extension = path.substr(dot);
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    // A .slang file is only one pass and has no preset topology.  Selecting
+    // it used to fail after the picker closed because Load() correctly expects
+    // the shaders=N contract of .slangp.
+    return extension == ".slangp";
+}
+
+void GBAStationOverlay::OpenMaskBrowser(bool shader)
+{
+    // Keep browsing inside the user-managed overlay directory.  The fallback
+    // also makes desktop/debug builds work without an sdmc mount.
+    struct stat st{};
+    m_assetPickerShader = shader;
+    m_maskBrowserRoot = shader ? "sdmc:/GBAStation/shaders" : "sdmc:/GBAStation/overlays";
+    if (stat(m_maskBrowserRoot.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+        m_maskBrowserRoot = shader ? "/GBAStation/shaders" : "/GBAStation/overlays";
+    m_maskBrowserDir = m_maskBrowserRoot;
+    m_maskBrowserSelection = 0;
+    m_maskBrowserScrollY = 0.0f;
+    m_maskBrowserTargetScrollY = 0.0f;
+    RefreshMaskBrowser();
+}
+
+void GBAStationOverlay::RefreshMaskBrowser()
+{
+    m_maskBrowserEntries.clear();
+    m_maskBrowserSelection = 0;
+
+    const std::string root = NormalizeDiscPath(m_maskBrowserRoot);
+    const std::string current = NormalizeDiscPath(m_maskBrowserDir);
+    if (current != root)
+    {
+        const size_t slash = current.find_last_of('/');
+        if (slash != std::string::npos && slash > 0)
+            m_maskBrowserEntries.push_back({"..", current.substr(0, slash), true});
+    }
+
+    DIR *directory = opendir(m_maskBrowserDir.c_str());
+    if (!directory)
+        return;
+    while (dirent *entry = readdir(directory))
+    {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..")
+            continue;
+        const std::string path = NormalizeDiscPath(m_maskBrowserDir + "/" + name);
+        struct stat st{};
+        const bool isDir = stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        if (isDir || (m_assetPickerShader ? IsSlangPresetPath(name) : IsMaskImagePath(name)))
+            m_maskBrowserEntries.push_back({name, path, isDir});
+    }
+    closedir(directory);
+    std::sort(m_maskBrowserEntries.begin() + (current == root ? 0 : 1), m_maskBrowserEntries.end(),
+              [](const MaskBrowserEntry &a, const MaskBrowserEntry &b) {
+                  if (a.isDir != b.isDir) return a.isDir > b.isDir;
+                  std::string left = a.name, right = b.name;
+                  std::transform(left.begin(), left.end(), left.begin(), ::tolower);
+                  std::transform(right.begin(), right.end(), right.begin(), ::tolower);
+                  return left < right;
+              });
+}
+
+void GBAStationOverlay::RenderMaskBrowser(ImDrawList *dl, ImVec2 displaySize)
+{
+    const float scale = OverlayScale();
+    ImFont *font = ImGui::GetFont();
+    if (!font)
+        return;
+    const float panelX = 48.0f * scale;
+    const float panelY = 116.0f * scale;
+    const float panelW = displaySize.x - 96.0f * scale;
+    const float panelBottom = displaySize.y - 70.0f * scale;
+    const float rowH = 58.0f * scale;
+    const float listY = panelY + 116.0f * scale;
+    const float listH = panelBottom - listY - 12.0f * scale;
+    const int visible = std::max(1, std::min(static_cast<int>(listH / rowH),
+                                               static_cast<int>(m_maskBrowserEntries.size())));
+    const ImVec2 panelMin(panelX, panelY), panelMax(panelX + panelW, panelBottom);
+    dl->AddRectFilled(panelMin, panelMax, IM_COL32(13, 22, 32, 244), 12.0f * scale);
+    dl->AddRect(panelMin, panelMax, IM_COL32(56, 96, 132, 180), 12.0f * scale, 0, 1.5f * scale);
+    dl->AddText(font, 26.0f * scale, panelMin + ImVec2(24.0f * scale, 18.0f * scale),
+                IM_COL32(240, 247, 255, 255), (m_assetPickerShader ? tr("选择着色器") : tr("选择遮罩图片")).c_str());
+    const std::string pathLine = m_maskBrowserDir.empty() ? m_maskBrowserRoot : m_maskBrowserDir;
+    dl->AddText(font, 18.0f * scale, panelMin + ImVec2(24.0f * scale, 58.0f * scale),
+                IM_COL32(184, 204, 224, 225), pathLine.c_str());
+    dl->AddText(font, 16.0f * scale, panelMin + ImVec2(24.0f * scale, 85.0f * scale),
+                IM_COL32(112, 204, 255, 220), (m_assetPickerShader ? tr("仅显示 SLANGP；B 返回着色器设置") : tr("仅显示 PNG、JPG、BMP、TGA、WEBP；B 返回画面设置")).c_str());
+    dl->AddLine(panelMin + ImVec2(20.0f * scale, 106.0f * scale),
+                ImVec2(panelMax.x - 20.0f * scale, panelMin.y + 106.0f * scale),
+                IM_COL32(0, 122, 204, 150), 1.0f * scale);
+    if (m_maskBrowserEntries.empty())
+    {
+        dl->AddText(font, 20.0f * scale, ImVec2(panelX + 24.0f * scale, listY + 18.0f * scale),
+                    IM_COL32(184, 204, 224, 230), (m_assetPickerShader ? tr("该目录没有可用的着色器") : tr("该目录没有可用的遮罩图片")).c_str());
+        return;
+    }
+    m_maskBrowserScrollY += (m_maskBrowserTargetScrollY - m_maskBrowserScrollY) * 0.25f;
+    const int first = std::clamp(static_cast<int>(m_maskBrowserScrollY / rowH), 0,
+                                 std::max(0, static_cast<int>(m_maskBrowserEntries.size()) - visible));
+    for (int row = 0; row < visible; ++row)
+    {
+        const int index = first + row;
+        if (index >= static_cast<int>(m_maskBrowserEntries.size())) break;
+        const float y = listY + row * rowH;
+        const bool selected = index == m_maskBrowserSelection;
+        const ImVec2 rowMin(panelX + 16.0f * scale, y), rowMax(panelMax.x - 16.0f * scale, y + rowH - 6.0f * scale);
+        dl->AddRectFilled(rowMin, rowMax, selected ? IM_COL32(0, 96, 158, 225) : IM_COL32(255, 255, 255, 9), 10.0f * scale);
+        if (selected)
+            dl->AddRect(rowMin, rowMax, IM_COL32(90, 190, 255, 220), 10.0f * scale, 0, 2.0f);
+        const MaskBrowserEntry &entry = m_maskBrowserEntries[index];
+        char icon[8];
+        EncodeUtf8(icon, entry.isDir ? 0xE2C8 : 0xE3B0);
+        dl->AddText(font, 26.0f * scale, rowMin + ImVec2(12.0f * scale, 12.0f * scale), IM_COL32(130, 190, 255, 235), icon);
+        dl->AddText(font, 21.0f * scale, rowMin + ImVec2(52.0f * scale, 15.0f * scale),
+                    selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(204, 224, 244, 225), entry.name.c_str());
+    }
 }
 
 void GBAStationOverlay::RenderStartupDiscChoice(ImDrawList *dl, ImVec2 displaySize)
@@ -3470,6 +3699,15 @@ void GBAStationOverlay::SaveCoreSettings()
         case FlycastDisplaySize::_2x:
             sizeStr = "2x";
             break;
+        case FlycastDisplaySize::_3x:
+            sizeStr = "3x";
+            break;
+        case FlycastDisplaySize::_4x:
+            sizeStr = "4x";
+            break;
+        case FlycastDisplaySize::_5x:
+            sizeStr = "5x";
+            break;
         case FlycastDisplaySize::Auto:
             sizeStr = "Auto";
             break;
@@ -3512,6 +3750,9 @@ void GBAStationOverlay::SetGameDisplaySettings(int displayMode, const std::strin
     else if (screenLayout == "Original" || screenLayout == "原比例") m_displaySize = FlycastDisplaySize::Original;
     else if (screenLayout == "1x") m_displaySize = FlycastDisplaySize::_1x;
     else if (screenLayout == "2x") m_displaySize = FlycastDisplaySize::_2x;
+    else if (screenLayout == "3x") m_displaySize = FlycastDisplaySize::_3x;
+    else if (screenLayout == "4x") m_displaySize = FlycastDisplaySize::_4x;
+    else if (screenLayout == "5x") m_displaySize = FlycastDisplaySize::_5x;
     else if (screenLayout == "Auto") m_displaySize = FlycastDisplaySize::Auto;
 
     if (m_displayMode == FlycastDisplayMode::Integer &&
@@ -3533,6 +3774,37 @@ void GBAStationOverlay::SetMaskSettings(bool enabled, const std::string &path)
         return;
     m_maskPath = path;
     ReloadMaskTexture();
+}
+
+void GBAStationOverlay::SetShaderSettings(bool enabled, const std::string &path)
+{
+    m_shaderEnabled = enabled;
+    if (m_shaderPath == path && (!enabled || m_shaderPresetValid))
+        return;
+    m_shaderPath = path;
+    m_shaderPreset = {};
+    m_shaderPresetValid = false;
+    if (!enabled || path.empty())
+        return;
+
+    std::string error;
+    if (!GBAStationSlang::Load(path, m_shaderPreset, error))
+    {
+        // Retain the persisted selection so the user can replace a missing
+        // file from the picker, but never expose half-compiled shader data to
+        // the render path.
+        LOG_WARN("SLANG", "Unable to load saved preset '%s': %s", path.c_str(), error.c_str());
+        return;
+    }
+    m_shaderPresetValid = true;
+}
+
+void GBAStationOverlay::SetShaderPreset(bool enabled, GBAStationSlang::Preset preset)
+{
+    m_shaderEnabled = enabled;
+    m_shaderPath = preset.path;
+    m_shaderPreset = std::move(preset);
+    m_shaderPresetValid = enabled && !m_shaderPreset.passes.empty();
 }
 
 void GBAStationOverlay::ReloadMaskTexture()
@@ -3569,6 +3841,9 @@ const char *GBAStationOverlay::GetGameScreenLayout() const
     case FlycastDisplaySize::Original: return "Original";
     case FlycastDisplaySize::_1x: return "1x";
     case FlycastDisplaySize::_2x: return "2x";
+    case FlycastDisplaySize::_3x: return "3x";
+    case FlycastDisplaySize::_4x: return "4x";
+    case FlycastDisplaySize::_5x: return "5x";
     default: return "Auto";
     }
 }

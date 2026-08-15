@@ -111,6 +111,8 @@ private:
     std::string gameInternalResolution_;
     bool gameMaskEnabled_ = false;
     std::string gameMaskPath_;
+    bool gameShaderEnabled_ = false;
+    std::string gameShaderPath_;
     std::string launchDiscPath_;
     std::string activeDiscPath_;
     std::string lastActiveDiscPath_;

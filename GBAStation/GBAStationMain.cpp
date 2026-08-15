@@ -131,27 +131,38 @@ u64 TokenHidMask(std::string_view token)
     return 0;
 }
 
-u64 ParseComboMask(std::string_view combo)
+bool StickTokenHeld(std::string_view token, int leftX, int leftY, int rightX, int rightY)
 {
-    const std::string value = Trim(combo);
-    if (value.empty() || value == "none")
-        return 0;
-    u64 mask = 0;
-    std::size_t begin = 0;
-    while (begin < value.size())
-    {
-        const std::size_t end = value.find('+', begin);
-        const std::string_view token = std::string_view(value).substr(
-            begin, end == std::string::npos ? value.size() - begin : end - begin);
-        mask |= TokenHidMask(token);
-        if (end == std::string::npos)
-            break;
-        begin = end + 1;
-    }
-    return mask;
+    // These are digital thresholds only. The original analogue values still
+    // travel through FrameInput for titles that require variable input.
+    constexpr int kThreshold = 16000;
+    const std::string t = Trim(token);
+    if (t == "PAD_LEFTSTICKUP" || t == "PAD_LSTICK_UP") return leftY < -kThreshold;
+    if (t == "PAD_LEFTSTICKDOWN" || t == "PAD_LSTICK_DOWN") return leftY > kThreshold;
+    if (t == "PAD_LEFTSTICKLEFT" || t == "PAD_LSTICK_LEFT") return leftX < -kThreshold;
+    if (t == "PAD_LEFTSTICKRIGHT" || t == "PAD_LSTICK_RIGHT") return leftX > kThreshold;
+    if (t == "PAD_RIGHTSTICKUP" || t == "PAD_RSTICK_UP") return rightY < -kThreshold;
+    if (t == "PAD_RIGHTSTICKDOWN" || t == "PAD_RSTICK_DOWN") return rightY > kThreshold;
+    if (t == "PAD_RIGHTSTICKLEFT" || t == "PAD_RSTICK_LEFT") return rightX < -kThreshold;
+    if (t == "PAD_RIGHTSTICKRIGHT" || t == "PAD_RSTICK_RIGHT") return rightX > kThreshold;
+    return false;
 }
 
-bool BindingHeld(const char* key, const char* fallback, u64 held)
+bool IsStickToken(std::string_view token)
+{
+    const std::string t = Trim(token);
+    return t == "PAD_LEFTSTICKUP" || t == "PAD_LSTICK_UP" ||
+           t == "PAD_LEFTSTICKDOWN" || t == "PAD_LSTICK_DOWN" ||
+           t == "PAD_LEFTSTICKLEFT" || t == "PAD_LSTICK_LEFT" ||
+           t == "PAD_LEFTSTICKRIGHT" || t == "PAD_LSTICK_RIGHT" ||
+           t == "PAD_RIGHTSTICKUP" || t == "PAD_RSTICK_UP" ||
+           t == "PAD_RIGHTSTICKDOWN" || t == "PAD_RSTICK_DOWN" ||
+           t == "PAD_RIGHTSTICKLEFT" || t == "PAD_RSTICK_LEFT" ||
+           t == "PAD_RIGHTSTICKRIGHT" || t == "PAD_RSTICK_RIGHT";
+}
+
+bool BindingHeld(const char* key, const char* fallback, u64 held,
+                 int leftX = 0, int leftY = 0, int rightX = 0, int rightY = 0)
 {
     const auto it = g_configValues.find(key);
     const std::string value = it == g_configValues.end() ? fallback : it->second;
@@ -161,8 +172,34 @@ bool BindingHeld(const char* key, const char* fallback, u64 held)
         const std::size_t end = value.find('|', begin);
         const std::string_view combo = std::string_view(value).substr(
             begin, end == std::string::npos ? value.size() - begin : end - begin);
-        const u64 mask = ParseComboMask(combo);
-        if (mask != 0 && (held & mask) == mask)
+        bool valid = false;
+        bool comboHeld = true;
+        std::size_t tokenBegin = 0;
+        while (tokenBegin < combo.size())
+        {
+            const std::size_t tokenEnd = combo.find('+', tokenBegin);
+            const std::string_view token = combo.substr(
+                tokenBegin, tokenEnd == std::string::npos ? combo.size() - tokenBegin : tokenEnd - tokenBegin);
+            const u64 mask = TokenHidMask(token);
+            if (mask != 0)
+            {
+                valid = true;
+                comboHeld = comboHeld && ((held & mask) == mask);
+            }
+            else if (IsStickToken(token))
+            {
+                valid = true;
+                comboHeld = comboHeld && StickTokenHeld(token, leftX, leftY, rightX, rightY);
+            }
+            else
+            {
+                comboHeld = false;
+            }
+            if (tokenEnd == std::string::npos)
+                break;
+            tokenBegin = tokenEnd + 1;
+        }
+        if (valid && comboHeld)
             return true;
         if (end == std::string::npos)
             break;
@@ -178,32 +215,39 @@ PadState g_pads[MaxPlayers];
 /// physical layout (A=east, B=south, X=north, Y=west) is translated to SDL
 /// positional (A=south, B=east, X=west, Y=north) so consumers behave the same
 /// as on the SDL libretro path.
-uint64_t MapButtons(u64 hid)
+uint64_t MapButtons(u64 hid, int leftX, int leftY, int rightX, int rightY)
 {
     uint64_t b = 0;
-    if (BindingHeld("dc.handle.b", "PAD_B", hid))      b |= Pad_A;   // south
-    if (BindingHeld("dc.handle.a", "PAD_A", hid))      b |= Pad_B;   // east
-    if (BindingHeld("dc.handle.y", "PAD_Y", hid))      b |= Pad_X;   // west
-    if (BindingHeld("dc.handle.x", "PAD_X", hid))      b |= Pad_Y;   // north
-    if (BindingHeld("dc.handle.up", "PAD_UP", hid))    b |= Pad_Up;
-    if (BindingHeld("dc.handle.down", "PAD_DOWN", hid)) b |= Pad_Down;
-    if (BindingHeld("dc.handle.left", "PAD_LEFT", hid)) b |= Pad_Left;
-    if (BindingHeld("dc.handle.right", "PAD_RIGHT", hid)) b |= Pad_Right;
-    if (BindingHeld("dc.handle.l", "PAD_LB", hid))     b |= Pad_L;
-    if (BindingHeld("dc.handle.r", "PAD_RB", hid))     b |= Pad_R;
-    // The Dreamcast pad has no L2/R2/L3/R3 configurable bindings; its shoulder
-    // buttons are analog triggers driven from Pad_L/Pad_R on the L2/R2
-    // channels (see ApplyCoreInput).  Bindings copied from other cores for
-    // these keys must not be parsed.
-    if (BindingHeld("dc.handle.start", "PAD_START", hid)) b |= Pad_Start;
-    if (BindingHeld("dc.handle.select", "PAD_BACK", hid)) b |= Pad_Select;
+    auto bound = [&](const char *key, const char *fallback) {
+        return BindingHeld(key, fallback, hid, leftX, leftY, rightX, rightY);
+    };
+    if (bound("dc.handle.b", "PAD_B"))      b |= Pad_A;   // south
+    if (bound("dc.handle.a", "PAD_A"))      b |= Pad_B;   // east
+    if (bound("dc.handle.y", "PAD_Y"))      b |= Pad_X;   // west
+    if (bound("dc.handle.x", "PAD_X"))      b |= Pad_Y;   // north
+    if (bound("dc.handle.up", "PAD_UP"))    b |= Pad_Up;
+    if (bound("dc.handle.down", "PAD_DOWN")) b |= Pad_Down;
+    if (bound("dc.handle.left", "PAD_LEFT")) b |= Pad_Left;
+    if (bound("dc.handle.right", "PAD_RIGHT")) b |= Pad_Right;
+    if (bound("dc.handle.l", "PAD_LB"))     b |= Pad_L;
+    if (bound("dc.handle.r", "PAD_RB"))     b |= Pad_R;
+    if (bound("dc.handle.l2", "PAD_ZL"))    b |= Pad_L2;
+    if (bound("dc.handle.r2", "PAD_ZR"))    b |= Pad_R2;
+    if (bound("dc.handle.l3", "PAD_L3"))    b |= Pad_L3;
+    if (bound("dc.handle.r3", "PAD_R3"))    b |= Pad_R3;
+    if (bound("dc.handle.start", "PAD_START")) b |= Pad_Start;
+    if (bound("dc.handle.select", "PAD_BACK")) b |= Pad_Select;
 
     // Frontend actions must use their own config keys.  Deriving the menu
     // hotkey from mapped Start/Select made the original Flycast shortcut win
     // whenever a user changed the launcher mapping.
-    if (BindingHeld("dc.hotkey.menu.pad", "PAD_START+PAD_BACK", hid))
+    if (bound("dc.hotkey.menu.pad", "PAD_START+PAD_BACK"))
         b |= Pad_Guide;
-    if (BindingHeld("dc.handle.fastforward", "PAD_LSB", hid))
+    // New configs use the hotkey namespace; preserve the original key so an
+    // existing launcher config does not silently lose fast-forward.
+    const char *fastForwardKey = g_configValues.find("dc.hotkey.fastforward") != g_configValues.end()
+        ? "dc.hotkey.fastforward" : "dc.handle.fastforward";
+    if (bound(fastForwardKey, "PAD_LSB"))
         b |= Pad_FastForward;
     return b;
 }
@@ -370,7 +414,6 @@ FrameInput Main::PollInput()
 
         PlayerInput &slot = in.players[player];
         const uint64_t rawButtons = padGetButtons(&g_pads[player]);
-        slot.buttons = MapButtons(rawButtons);
         const HidAnalogStickState left = padGetStickPos(&g_pads[player], 0);
         const HidAnalogStickState right = padGetStickPos(&g_pads[player], 1);
         // libnx reports +Y up; convert to the SDL convention (+Y down) consumers use.
@@ -378,6 +421,8 @@ FrameInput Main::PollInput()
         slot.leftStickY = -left.y;
         slot.rightStickX = right.x;
         slot.rightStickY = -right.y;
+        slot.buttons = MapButtons(rawButtons, slot.leftStickX, slot.leftStickY,
+                                  slot.rightStickX, slot.rightStickY);
         slot.pressed = slot.buttons & ~prevButtons_[player];
         slot.released = prevButtons_[player] & ~slot.buttons;
         prevButtons_[player] = slot.buttons;

@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include "GBAStationMain.h"        // GBAStation::FrameInput / PadButton
 #include "GBAStationOverlayHost.h" // IOverlayHost / RANotification / RAAlertPosition
+#include "GBAStationSlangPreset.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -17,6 +18,7 @@ enum class OverlayMenu
     SaveStates,
     Settings,
     DiscSelect,
+    MaskSelect,
     StartupDiscChoice
 };
 
@@ -29,7 +31,7 @@ enum class FlycastDisplayMode
 };
 
 /// @brief Display size (context-dependent on FlycastDisplayMode)
-///   Integer → 1x, 2x, Auto
+///   Integer → 1x … 5x, Auto
 ///   Display → Stretch, 4:3, 16:9, Original
 enum class FlycastDisplaySize
 {
@@ -41,7 +43,10 @@ enum class FlycastDisplaySize
     // Integer sizes (4-6)
     _1x = 4,
     _2x = 5,
-    Auto = 6
+    Auto = 6,
+    _3x = 7,
+    _4x = 8,
+    _5x = 9
 };
 
 /// @brief Overlay UI for Flycast with GBAStation styling
@@ -83,6 +88,14 @@ public:
     void SetMaskSettings(bool enabled, const std::string &path);
     bool IsMaskEnabled() const { return m_maskEnabled; }
     const std::string &MaskPath() const { return m_maskPath; }
+    // Keeps the compiled preset alive after validation.  The Vulkan chain can
+    // consume its SPIR-V and reflection data without reparsing a file during a
+    // frame.
+    void SetShaderSettings(bool enabled, const std::string &path);
+    void SetShaderPreset(bool enabled, GBAStationSlang::Preset preset);
+    bool IsShaderEnabled() const { return m_shaderEnabled; }
+    const std::string &ShaderPath() const { return m_shaderPath; }
+    const GBAStationSlang::Preset *ShaderPreset() const { return m_shaderPresetValid ? &m_shaderPreset : nullptr; }
     bool ConsumeGameDisplaySettingsSaveRequest();
     int GetGameDisplayModeIndex() const { return static_cast<int>(m_displayMode); }
     const char *GetGameScreenLayout() const;
@@ -126,6 +139,9 @@ private:
     void OpenDiscBrowser();
     void RefreshDiscBrowser();
     void RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize);
+    void OpenMaskBrowser(bool shader = false);
+    void RefreshMaskBrowser();
+    void RenderMaskBrowser(ImDrawList *dl, ImVec2 displaySize);
     void RenderStartupDiscChoice(ImDrawList *dl, ImVec2 displaySize);
     void RenderRAAlerts(ImDrawList *dl, ImVec2 displaySize, float deltaTime);
     void ActivateTab(int tab);
@@ -160,6 +176,22 @@ private:
     bool m_maskEnabled = false;
     std::string m_maskPath;
     ImTextureID m_maskTexture = 0;
+    bool m_shaderEnabled = false;
+    std::string m_shaderPath;
+    GBAStationSlang::Preset m_shaderPreset;
+    bool m_shaderPresetValid = false;
+    struct MaskBrowserEntry {
+        std::string name;
+        std::string path;
+        bool isDir = false;
+    };
+    std::string m_maskBrowserRoot;
+    std::string m_maskBrowserDir;
+    std::vector<MaskBrowserEntry> m_maskBrowserEntries;
+    int m_maskBrowserSelection = 0;
+    float m_maskBrowserScrollY = 0.0f;
+    float m_maskBrowserTargetScrollY = 0.0f;
+    bool m_assetPickerShader = false;
     int m_discSelection = 0;
     float m_discScrollY = 0.0f;
     float m_discTargetScrollY = 0.0f;
@@ -208,8 +240,10 @@ uint64_t m_navHeldPrev = 0;
 uint64_t m_navFireAtMs = 0;
 uint64_t m_navStartMs = 0;
 static constexpr uint64_t NAV_INITIAL_DELAY_MS = 280;
-static constexpr uint64_t NAV_MIN_REPEAT_MS = 48;
-static constexpr uint64_t NAV_START_REPEAT_MS = 128;
+// Never accelerate past roughly eleven focus moves per second.  The previous
+// 48 ms floor made long lists almost uncontrollable after holding a direction.
+static constexpr uint64_t NAV_MIN_REPEAT_MS = 88;
+static constexpr uint64_t NAV_START_REPEAT_MS = 156;
 
     // Start+Select opens the overlay only; it never closes it (Back closes), so
     // no combo-edge/flicker state is needed.

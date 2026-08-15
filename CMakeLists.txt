@@ -203,6 +203,7 @@ if(NINTENDO_SWITCH)
 				GBAStation/GBAStationChainload.cpp
 				GBAStation/GBAStationCore.cpp
 				GBAStation/GBAStationOverlay.cpp
+				GBAStation/GBAStationSlangPreset.cpp
 				GBAStation/GBAStationVulkan.cpp
 				GBAStation/GBAStationTranslationManager.cpp
 				GBAStation/GBAStationStubs.cpp
