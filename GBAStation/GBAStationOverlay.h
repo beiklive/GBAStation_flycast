@@ -7,6 +7,7 @@
 #include "GBAStationOverlayHost.h" // IOverlayHost / RANotification / RAAlertPosition
 #include "GBAStationSlangPreset.h"
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <memory>
 
@@ -18,7 +19,6 @@ enum class OverlayMenu
     SaveStates,
     Settings,
     DiscSelect,
-    MaskSelect,
     StartupDiscChoice
 };
 
@@ -84,18 +84,22 @@ public:
     /// @brief Set game title for title card
     void SetGameTitle(const std::string &title) { m_gameTitle = title; }
     void SetGameDisplaySettings(int displayMode, const std::string &screenLayout,
-                                const std::string &internalResolution);
+                                const std::string &internalResolution, int integerScale = 1);
     void SetMaskSettings(bool enabled, const std::string &path);
     bool IsMaskEnabled() const { return m_maskEnabled; }
     const std::string &MaskPath() const { return m_maskPath; }
     // Keeps the compiled preset alive after validation.  The Vulkan chain can
     // consume its SPIR-V and reflection data without reparsing a file during a
     // frame.
-    void SetShaderSettings(bool enabled, const std::string &path);
+    void SetShaderSettings(bool enabled, const std::string &path,
+                           const std::vector<std::string> &names = {},
+                           const std::vector<float> &values = {});
     void SetShaderPreset(bool enabled, GBAStationSlang::Preset preset);
     bool IsShaderEnabled() const { return m_shaderEnabled; }
     const std::string &ShaderPath() const { return m_shaderPath; }
     const GBAStationSlang::Preset *ShaderPreset() const { return m_shaderPresetValid ? &m_shaderPreset : nullptr; }
+    const std::vector<GBAStationSlang::Parameter> &ShaderParameters() const { return m_shaderPreset.parameters; }
+    int GetGameIntegerScale() const;
     bool ConsumeGameDisplaySettingsSaveRequest();
     int GetGameDisplayModeIndex() const { return static_cast<int>(m_displayMode); }
     const char *GetGameScreenLayout() const;
@@ -139,9 +143,16 @@ private:
     void OpenDiscBrowser();
     void RefreshDiscBrowser();
     void RenderDiscBrowser(ImDrawList *dl, ImVec2 displaySize);
-    void OpenMaskBrowser(bool shader = false);
-    void RefreshMaskBrowser();
-    void RenderMaskBrowser(ImDrawList *dl, ImVec2 displaySize);
+    void RenderSettingsSidebar(ImDrawList *dl, ImVec2 displaySize);
+    void RenderFilePicker(ImDrawList *dl, ImVec2 displaySize, bool shaderPicker);
+    void OpenSettingsSidebar(bool shader);
+    void CloseSettingsSidebar();
+    void OpenMaskFilePicker();
+    void ReloadMaskFilePicker(const std::string &directory, const std::string &focusPath = {});
+    void OpenShaderFilePicker();
+    void ReloadShaderFilePicker(const std::string &directory, const std::string &focusPath = {});
+    static bool IsMaskImagePath(const std::string &path);
+    static bool IsShaderPath(const std::string &path);
     void RenderStartupDiscChoice(ImDrawList *dl, ImVec2 displaySize);
     void RenderRAAlerts(ImDrawList *dl, ImVec2 displaySize, float deltaTime);
     void ActivateTab(int tab);
@@ -180,18 +191,22 @@ private:
     std::string m_shaderPath;
     GBAStationSlang::Preset m_shaderPreset;
     bool m_shaderPresetValid = false;
-    struct MaskBrowserEntry {
+    enum class SettingsSidebar { None, Shader, ShaderFilePicker, Mask, MaskFilePicker };
+    SettingsSidebar m_settingsSidebar = SettingsSidebar::None;
+    int m_settingsSidebarSelection = 0;
+    struct FileEntry {
         std::string name;
         std::string path;
-        bool isDir = false;
+        bool isDirectory = false;
     };
-    std::string m_maskBrowserRoot;
-    std::string m_maskBrowserDir;
-    std::vector<MaskBrowserEntry> m_maskBrowserEntries;
-    int m_maskBrowserSelection = 0;
-    float m_maskBrowserScrollY = 0.0f;
-    float m_maskBrowserTargetScrollY = 0.0f;
-    bool m_assetPickerShader = false;
+    std::vector<FileEntry> m_maskFileEntries;
+    std::string m_maskFilePickerDirectory;
+    std::string m_maskFilePickerRoot;
+    std::unordered_map<std::string, int> m_maskFilePickerSelections;
+    std::vector<FileEntry> m_shaderFileEntries;
+    std::string m_shaderFilePickerDirectory;
+    std::string m_shaderFilePickerRoot;
+    std::unordered_map<std::string, int> m_shaderFilePickerSelections;
     int m_discSelection = 0;
     float m_discScrollY = 0.0f;
     float m_discTargetScrollY = 0.0f;

@@ -16,14 +16,17 @@
 
 #include "GBAStationVulkan.h"
 #include "GBAStationLogger.h"
+#include "GBAStationSlangPreset.h"
 
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <map>
 #include <stdexcept>
 #include <vector>
 
@@ -129,8 +132,13 @@ struct PerFrame
 
     // Optional semaphore the core wants signalled when we finish using the image.
     vk::Semaphore signalSemaphore = VK_NULL_HANDLE;
-};
 
+    // Staging allocations recorded into this frame's command buffer.  They
+    // must outlive the GPU copy and are reclaimed only when this slot's fence
+    // is signalled on its next use.
+    std::vector<vk::Buffer> deferredUploadBuffers;
+    std::vector<vk::DeviceMemory> deferredUploadMemories;
+};
 struct OverlayTextureResource
 {
     vk::Image image;
@@ -138,6 +146,60 @@ struct OverlayTextureResource
     vk::ImageView view;
     vk::Sampler sampler;
     VkDescriptorSet descriptor = VK_NULL_HANDLE;
+};
+
+struct PendingOverlayUpload
+{
+    vk::Buffer stagingBuffer;
+    vk::DeviceMemory stagingMemory;
+    vk::Image image;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+struct SlangTarget
+{
+    vk::Image image;
+    vk::DeviceMemory memory;
+    vk::ImageView view;
+    vk::Framebuffer framebuffer;
+    vk::Extent2D extent{};
+    bool initialized = false;
+};
+
+struct SlangPassRuntime
+{
+    const GBAStationSlang::Pass* definition = nullptr;
+    vk::DescriptorSetLayout descriptorSetLayout;
+    vk::PipelineLayout pipelineLayout;
+    vk::Pipeline pipeline;
+    std::vector<vk::DescriptorSet> descriptorSets;
+    std::vector<vk::Buffer> uniformBuffers;
+    std::vector<vk::DeviceMemory> uniformMemories;
+    std::vector<SlangTarget> targets;
+    vk::Extent2D targetExtent{};
+    uint32_t pushConstantSize = 0;
+};
+
+struct SlangRuntime
+{
+    const GBAStationSlang::Preset* preset = nullptr;
+    vk::RenderPass renderPass;
+    vk::DescriptorPool descriptorPool;
+    vk::Sampler nearestSampler;
+    vk::Sampler linearSampler;
+    vk::Buffer vertexBuffer;
+    vk::DeviceMemory vertexMemory;
+    std::vector<SlangPassRuntime> passes;
+    vk::Extent2D sourceExtent{};
+    vk::Extent2D viewportExtent{};
+};
+
+struct SlangOutput
+{
+    vk::Image image;
+    vk::Extent2D extent{};
+    bool valid = false;
 };
 
 vk::Instance        s_instance;
@@ -171,6 +233,10 @@ retro_vulkan_image s_lastImage{};
 bool               s_lastImageValid = false;
 uint32_t           s_lastImageFrame = 0;
 std::vector<OverlayTextureResource> s_overlayTextures;
+std::vector<PendingOverlayUpload> s_pendingOverlayUploads;
+const GBAStationSlang::Preset* s_activeSlangPreset = nullptr;
+std::vector<SlangRuntime> s_slangRuntimes;
+std::string s_slangLastFailure;
 
 const retro_hw_render_context_negotiation_interface_vulkan* s_negIface = nullptr;
 retro_hw_render_interface_vulkan s_hwIface{};
@@ -323,9 +389,515 @@ void DestroyOverlayTextureResources()
     }
 
     try { s_device.waitIdle(); } catch (...) {}
+    for (auto& upload : s_pendingOverlayUploads)
+    {
+        if (upload.stagingBuffer) s_device.destroyBuffer(upload.stagingBuffer);
+        if (upload.stagingMemory) s_device.freeMemory(upload.stagingMemory);
+    }
+    s_pendingOverlayUploads.clear();
     for (auto& texture : s_overlayTextures)
         DestroyOverlayTextureResource(texture, true);
     s_overlayTextures.clear();
+}
+
+void RecordPendingOverlayUploads(PerFrame& frame)
+{
+    // Never submit an ad-hoc command buffer for a menu texture.  Flycast owns
+    // work on this queue too; recording into the frontend frame keeps image
+    // ownership and queue ordering identical to the regular composite path.
+    for (PendingOverlayUpload& upload : s_pendingOverlayUploads)
+    {
+        if (!upload.image || !upload.stagingBuffer || upload.width == 0 || upload.height == 0)
+            continue;
+
+        TransitionLayout(frame.cmd, upload.image,
+                         vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                         {}, vk::AccessFlagBits::eTransferWrite,
+                         vk::PipelineStageFlagBits::eTopOfPipe,
+                         vk::PipelineStageFlagBits::eTransfer);
+        vk::BufferImageCopy region;
+        region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = vk::Extent3D(upload.width, upload.height, 1);
+        frame.cmd.copyBufferToImage(upload.stagingBuffer, upload.image,
+                                    vk::ImageLayout::eTransferDstOptimal, region);
+        TransitionLayout(frame.cmd, upload.image,
+                         vk::ImageLayout::eTransferDstOptimal,
+                         vk::ImageLayout::eShaderReadOnlyOptimal,
+                         vk::AccessFlagBits::eTransferWrite,
+                         vk::AccessFlagBits::eShaderRead,
+                         vk::PipelineStageFlagBits::eTransfer,
+                         vk::PipelineStageFlagBits::eFragmentShader);
+        frame.deferredUploadBuffers.push_back(upload.stagingBuffer);
+        frame.deferredUploadMemories.push_back(upload.stagingMemory);
+    }
+    if (!s_pendingOverlayUploads.empty())
+        VK_LOG_INFO("Recorded %zu pending overlay texture upload(s)", s_pendingOverlayUploads.size());
+    s_pendingOverlayUploads.clear();
+}
+
+struct SlangVertex { float position[4]; float uv[2]; };
+struct SlangGlobals
+{
+    float mvp[16];
+    float outputSize[4];
+    float finalViewportSize[4];
+    float sourceSize[4];
+    float originalSize[4];
+};
+
+uint32_t SlangPushConstantSize(const GBAStationSlang::Pass& pass)
+{
+    uint32_t size = 0;
+    for (const auto& member : pass.pushConstants)
+        size = std::max(size, member.offset + member.size);
+    return size;
+}
+
+uint32_t ResolveSlangDimension(GBAStationSlang::ScaleType type, float scale,
+                               uint32_t source, uint32_t viewport)
+{
+    float value = type == GBAStationSlang::ScaleType::Absolute ? scale :
+                  (type == GBAStationSlang::ScaleType::Viewport ? viewport : source) * scale;
+    return std::max(1u, static_cast<uint32_t>(std::lround(std::max(1.0f, value))));
+}
+
+bool CreateHostBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
+                      vk::Buffer& buffer, vk::DeviceMemory& memory)
+{
+    vk::BufferCreateInfo info;
+    info.size = size;
+    info.usage = usage;
+    info.sharingMode = vk::SharingMode::eExclusive;
+    buffer = s_device.createBuffer(info);
+    const vk::MemoryRequirements requirements = s_device.getBufferMemoryRequirements(buffer);
+    uint32_t typeIndex = 0;
+    if (!FindMemoryType(requirements.memoryTypeBits,
+                        vk::MemoryPropertyFlagBits::eHostVisible |
+                        vk::MemoryPropertyFlagBits::eHostCoherent, typeIndex) &&
+        !FindMemoryType(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible, typeIndex))
+        return false;
+    vk::MemoryAllocateInfo allocation;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = typeIndex;
+    memory = s_device.allocateMemory(allocation);
+    s_device.bindBufferMemory(buffer, memory, 0);
+    return true;
+}
+
+bool CreateSlangTarget(SlangRuntime& runtime, SlangTarget& target, vk::Extent2D extent)
+{
+    target.extent = extent;
+    vk::ImageCreateInfo imageInfo;
+    imageInfo.imageType = vk::ImageType::e2D;
+    imageInfo.format = vk::Format::eR8G8B8A8Unorm;
+    imageInfo.extent = vk::Extent3D(extent.width, extent.height, 1);
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = vk::SampleCountFlagBits::e1;
+    imageInfo.tiling = vk::ImageTiling::eOptimal;
+    imageInfo.usage = vk::ImageUsageFlagBits::eColorAttachment |
+                      vk::ImageUsageFlagBits::eSampled |
+                      vk::ImageUsageFlagBits::eTransferSrc;
+    imageInfo.sharingMode = vk::SharingMode::eExclusive;
+    target.image = s_device.createImage(imageInfo);
+    const vk::MemoryRequirements requirements = s_device.getImageMemoryRequirements(target.image);
+    uint32_t typeIndex = 0;
+    if (!FindMemoryType(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal, typeIndex))
+        return false;
+    vk::MemoryAllocateInfo allocation;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = typeIndex;
+    target.memory = s_device.allocateMemory(allocation);
+    s_device.bindImageMemory(target.image, target.memory, 0);
+
+    vk::ImageViewCreateInfo viewInfo;
+    viewInfo.image = target.image;
+    viewInfo.viewType = vk::ImageViewType::e2D;
+    viewInfo.format = vk::Format::eR8G8B8A8Unorm;
+    viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.layerCount = 1;
+    target.view = s_device.createImageView(viewInfo);
+
+    vk::FramebufferCreateInfo framebufferInfo;
+    framebufferInfo.renderPass = runtime.renderPass;
+    framebufferInfo.attachmentCount = 1;
+    framebufferInfo.pAttachments = &target.view;
+    framebufferInfo.width = extent.width;
+    framebufferInfo.height = extent.height;
+    framebufferInfo.layers = 1;
+    target.framebuffer = s_device.createFramebuffer(framebufferInfo);
+    return true;
+}
+
+void DestroySlangRuntime(SlangRuntime& runtime)
+{
+    if (!s_device) return;
+    for (auto& pass : runtime.passes)
+    {
+        for (auto& target : pass.targets)
+        {
+            if (target.framebuffer) s_device.destroyFramebuffer(target.framebuffer);
+            if (target.view) s_device.destroyImageView(target.view);
+            if (target.image) s_device.destroyImage(target.image);
+            if (target.memory) s_device.freeMemory(target.memory);
+        }
+        for (auto buffer : pass.uniformBuffers) if (buffer) s_device.destroyBuffer(buffer);
+        for (auto memory : pass.uniformMemories) if (memory) s_device.freeMemory(memory);
+        if (pass.pipeline) s_device.destroyPipeline(pass.pipeline);
+        if (pass.pipelineLayout) s_device.destroyPipelineLayout(pass.pipelineLayout);
+        if (pass.descriptorSetLayout) s_device.destroyDescriptorSetLayout(pass.descriptorSetLayout);
+    }
+    if (runtime.vertexBuffer) s_device.destroyBuffer(runtime.vertexBuffer);
+    if (runtime.vertexMemory) s_device.freeMemory(runtime.vertexMemory);
+    if (runtime.nearestSampler) s_device.destroySampler(runtime.nearestSampler);
+    if (runtime.linearSampler) s_device.destroySampler(runtime.linearSampler);
+    if (runtime.descriptorPool) s_device.destroyDescriptorPool(runtime.descriptorPool);
+    if (runtime.renderPass) s_device.destroyRenderPass(runtime.renderPass);
+    runtime = {};
+}
+
+bool BuildSlangRuntime(SlangRuntime& runtime, const GBAStationSlang::Preset& preset,
+                       vk::Extent2D sourceExtent, vk::Extent2D viewportExtent)
+{
+    runtime.preset = &preset;
+    runtime.sourceExtent = sourceExtent;
+    runtime.viewportExtent = viewportExtent;
+    const uint32_t frameCount = static_cast<uint32_t>(s_frames.size());
+    if (frameCount == 0 || preset.passes.empty()) return false;
+
+    vk::AttachmentDescription attachment;
+    attachment.format = vk::Format::eR8G8B8A8Unorm;
+    attachment.samples = vk::SampleCountFlagBits::e1;
+    attachment.loadOp = vk::AttachmentLoadOp::eDontCare;
+    attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+    attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+    attachment.initialLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    attachment.finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    vk::AttachmentReference colorReference(0, vk::ImageLayout::eColorAttachmentOptimal);
+    vk::SubpassDescription subpass;
+    subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorReference;
+    vk::RenderPassCreateInfo renderPassInfo;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &attachment;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    runtime.renderPass = s_device.createRenderPass(renderPassInfo);
+
+    uint32_t samplerCount = 0;
+    for (const auto& pass : preset.passes) samplerCount += std::max<size_t>(1, pass.samplers.size());
+    std::array<vk::DescriptorPoolSize, 2> poolSizes = {{
+        {vk::DescriptorType::eUniformBuffer, static_cast<uint32_t>(preset.passes.size()) * frameCount},
+        {vk::DescriptorType::eCombinedImageSampler, samplerCount * frameCount}}};
+    vk::DescriptorPoolCreateInfo poolInfo;
+    poolInfo.maxSets = static_cast<uint32_t>(preset.passes.size()) * frameCount;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
+    runtime.descriptorPool = s_device.createDescriptorPool(poolInfo);
+
+    vk::SamplerCreateInfo samplerInfo;
+    samplerInfo.magFilter = vk::Filter::eNearest;
+    samplerInfo.minFilter = vk::Filter::eNearest;
+    samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
+    samplerInfo.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+    samplerInfo.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+    samplerInfo.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+    samplerInfo.maxLod = 0.0f;
+    runtime.nearestSampler = s_device.createSampler(samplerInfo);
+    samplerInfo.magFilter = vk::Filter::eLinear;
+    samplerInfo.minFilter = vk::Filter::eLinear;
+    samplerInfo.mipmapMode = vk::SamplerMipmapMode::eLinear;
+    runtime.linearSampler = s_device.createSampler(samplerInfo);
+
+    const std::array<SlangVertex, 4> vertices = {{{{-1.f, -1.f, 0.f, 1.f}, {0.f, 0.f}},
+                                                    {{ 1.f, -1.f, 0.f, 1.f}, {1.f, 0.f}},
+                                                    {{-1.f,  1.f, 0.f, 1.f}, {0.f, 1.f}},
+                                                    {{ 1.f,  1.f, 0.f, 1.f}, {1.f, 1.f}}}};
+    if (!CreateHostBuffer(sizeof(vertices), vk::BufferUsageFlagBits::eVertexBuffer,
+                          runtime.vertexBuffer, runtime.vertexMemory))
+        return false;
+    void* vertexData = s_device.mapMemory(runtime.vertexMemory, 0, sizeof(vertices));
+    std::memcpy(vertexData, vertices.data(), sizeof(vertices));
+    s_device.flushMappedMemoryRanges(vk::MappedMemoryRange(runtime.vertexMemory, 0, sizeof(vertices)));
+    s_device.unmapMemory(runtime.vertexMemory);
+
+    vk::Extent2D inputExtent = sourceExtent;
+    for (const auto& definition : preset.passes)
+    {
+        SlangPassRuntime pass;
+        pass.definition = &definition;
+        pass.targetExtent = vk::Extent2D(
+            ResolveSlangDimension(definition.scaleX, definition.scaleXValue, inputExtent.width, viewportExtent.width),
+            ResolveSlangDimension(definition.scaleY, definition.scaleYValue, inputExtent.height, viewportExtent.height));
+        pass.pushConstantSize = SlangPushConstantSize(definition);
+        if (pass.pushConstantSize > s_gpu.getProperties().limits.maxPushConstantsSize)
+            throw std::runtime_error("Slang preset push-constant block exceeds device limit");
+
+        std::map<uint32_t, vk::DescriptorSetLayoutBinding> bindings;
+        bindings.emplace(0, vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1,
+                                                             vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment));
+        for (const auto& sampler : definition.samplers)
+            bindings.emplace(sampler.binding, vk::DescriptorSetLayoutBinding(sampler.binding,
+                vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment));
+        std::vector<vk::DescriptorSetLayoutBinding> bindingList;
+        for (const auto& binding : bindings) bindingList.push_back(binding.second);
+        vk::DescriptorSetLayoutCreateInfo layoutInfo;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindingList.size());
+        layoutInfo.pBindings = bindingList.data();
+        pass.descriptorSetLayout = s_device.createDescriptorSetLayout(layoutInfo);
+
+        vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &pass.descriptorSetLayout;
+        vk::PushConstantRange pushRange;
+        if (pass.pushConstantSize > 0)
+        {
+            pushRange.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+            pushRange.offset = 0;
+            pushRange.size = pass.pushConstantSize;
+            pipelineLayoutInfo.pushConstantRangeCount = 1;
+            pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+        }
+        pass.pipelineLayout = s_device.createPipelineLayout(pipelineLayoutInfo);
+
+        vk::ShaderModuleCreateInfo vertexModuleInfo({}, definition.vertexSpirv.size() * sizeof(uint32_t), definition.vertexSpirv.data());
+        vk::ShaderModuleCreateInfo fragmentModuleInfo({}, definition.fragmentSpirv.size() * sizeof(uint32_t), definition.fragmentSpirv.data());
+        vk::ShaderModule vertexModule = s_device.createShaderModule(vertexModuleInfo);
+        vk::ShaderModule fragmentModule = s_device.createShaderModule(fragmentModuleInfo);
+        const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {{
+            {vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertexModule, "main"},
+            {vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragmentModule, "main"}}};
+        vk::VertexInputBindingDescription vertexBinding(0, sizeof(SlangVertex), vk::VertexInputRate::eVertex);
+        const std::array<vk::VertexInputAttributeDescription, 2> attributes = {{
+            {0, 0, vk::Format::eR32G32B32A32Sfloat, 0}, {1, 0, vk::Format::eR32G32Sfloat, 16}}};
+        vk::PipelineVertexInputStateCreateInfo vertexInput;
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &vertexBinding;
+        vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size());
+        vertexInput.pVertexAttributeDescriptions = attributes.data();
+        vk::PipelineInputAssemblyStateCreateInfo inputAssembly({}, vk::PrimitiveTopology::eTriangleStrip, VK_FALSE);
+        vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1, nullptr);
+        vk::PipelineRasterizationStateCreateInfo rasterization({}, VK_FALSE, VK_FALSE, vk::PolygonMode::eFill,
+            vk::CullModeFlagBits::eNone, vk::FrontFace::eCounterClockwise, VK_FALSE, 0, 0, 0, 1.0f);
+        vk::PipelineMultisampleStateCreateInfo multisample({}, vk::SampleCountFlagBits::e1);
+        vk::PipelineColorBlendAttachmentState blendAttachment(VK_FALSE);
+        blendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        vk::PipelineColorBlendStateCreateInfo colorBlend({}, VK_FALSE, vk::LogicOp::eCopy, 1, &blendAttachment);
+        const std::array<vk::DynamicState, 2> dynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+        vk::PipelineDynamicStateCreateInfo dynamic({}, static_cast<uint32_t>(dynamicStates.size()), dynamicStates.data());
+        vk::GraphicsPipelineCreateInfo pipelineInfo;
+        pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
+        pipelineInfo.pStages = stages.data();
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterization;
+        pipelineInfo.pMultisampleState = &multisample;
+        pipelineInfo.pColorBlendState = &colorBlend;
+        pipelineInfo.pDynamicState = &dynamic;
+        pipelineInfo.layout = pass.pipelineLayout;
+        pipelineInfo.renderPass = runtime.renderPass;
+        pass.pipeline = s_device.createGraphicsPipeline({}, pipelineInfo).value;
+        s_device.destroyShaderModule(vertexModule);
+        s_device.destroyShaderModule(fragmentModule);
+
+        std::vector<vk::DescriptorSetLayout> setLayouts(frameCount, pass.descriptorSetLayout);
+        vk::DescriptorSetAllocateInfo allocateInfo(runtime.descriptorPool, frameCount, setLayouts.data());
+        pass.descriptorSets = s_device.allocateDescriptorSets(allocateInfo);
+        pass.uniformBuffers.resize(frameCount);
+        pass.uniformMemories.resize(frameCount);
+        pass.targets.resize(frameCount);
+        for (uint32_t frame = 0; frame < frameCount; ++frame)
+        {
+            if (!CreateHostBuffer(sizeof(SlangGlobals), vk::BufferUsageFlagBits::eUniformBuffer,
+                                  pass.uniformBuffers[frame], pass.uniformMemories[frame]) ||
+                !CreateSlangTarget(runtime, pass.targets[frame], pass.targetExtent))
+                return false;
+        }
+        inputExtent = pass.targetExtent;
+        runtime.passes.push_back(std::move(pass));
+    }
+    VK_LOG_INFO("Slang chain ready: passes=%zu source=%ux%u viewport=%ux%u", runtime.passes.size(),
+                sourceExtent.width, sourceExtent.height, viewportExtent.width, viewportExtent.height);
+    return true;
+}
+
+SlangRuntime* FindSlangRuntime(const GBAStationSlang::Preset& preset,
+                               vk::Extent2D sourceExtent, vk::Extent2D viewportExtent)
+{
+    for (auto& runtime : s_slangRuntimes)
+        if (runtime.preset == &preset && runtime.sourceExtent == sourceExtent &&
+            runtime.viewportExtent == viewportExtent)
+            return &runtime;
+    try
+    {
+        SlangRuntime runtime;
+        if (!BuildSlangRuntime(runtime, preset, sourceExtent, viewportExtent))
+        {
+            DestroySlangRuntime(runtime);
+            return nullptr;
+        }
+        s_slangRuntimes.push_back(std::move(runtime));
+        return &s_slangRuntimes.back();
+    }
+    catch (const std::exception& error)
+    {
+        const std::string key = preset.path + ": " + error.what();
+        if (key != s_slangLastFailure)
+        {
+            s_slangLastFailure = key;
+            VK_LOG_ERROR("Slang chain build failed: %s", key.c_str());
+        }
+        return nullptr;
+    }
+}
+
+struct SlangInput
+{
+    vk::Image image;
+    vk::ImageView view;
+    vk::Extent2D extent{};
+};
+
+void SetSlangSize(float (&destination)[4], vk::Extent2D extent)
+{
+    destination[0] = static_cast<float>(extent.width);
+    destination[1] = static_cast<float>(extent.height);
+    destination[2] = extent.width ? 1.0f / static_cast<float>(extent.width) : 0.0f;
+    destination[3] = extent.height ? 1.0f / static_cast<float>(extent.height) : 0.0f;
+}
+
+bool RenderSlangFrame(PerFrame& frame, const retro_vulkan_image& coreSource,
+                      vk::Extent2D sourceExtent, SlangOutput& output)
+{
+    const GBAStationSlang::Preset* preset = s_activeSlangPreset;
+    if (!preset || preset->passes.empty() || coreSource.image_view == VK_NULL_HANDLE)
+        return false;
+    SlangRuntime* runtime = FindSlangRuntime(*preset, sourceExtent, s_swapExtent);
+    if (!runtime || s_currentFrame >= s_frames.size()) return false;
+
+    const vk::Image coreImage(coreSource.create_info.image);
+    const vk::ImageLayout coreLayout = static_cast<vk::ImageLayout>(coreSource.image_layout);
+    if (coreLayout != vk::ImageLayout::eShaderReadOnlyOptimal)
+        TransitionLayout(frame.cmd, coreImage, coreLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
+                         vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                         vk::AccessFlagBits::eShaderRead, vk::PipelineStageFlagBits::eAllCommands,
+                         vk::PipelineStageFlagBits::eFragmentShader);
+    const SlangInput original{coreImage, vk::ImageView(coreSource.image_view), sourceExtent};
+    SlangInput current = original;
+    std::map<std::string, SlangInput> aliases;
+
+    for (SlangPassRuntime& pass : runtime->passes)
+    {
+        const GBAStationSlang::Pass& definition = *pass.definition;
+        SlangTarget& target = pass.targets[s_currentFrame];
+        const vk::ImageLayout oldLayout = target.initialized ? vk::ImageLayout::eShaderReadOnlyOptimal :
+                                                              vk::ImageLayout::eUndefined;
+        TransitionLayout(frame.cmd, target.image, oldLayout, vk::ImageLayout::eColorAttachmentOptimal,
+                         oldLayout == vk::ImageLayout::eUndefined ? vk::AccessFlags() : vk::AccessFlagBits::eShaderRead,
+                         vk::AccessFlagBits::eColorAttachmentWrite,
+                         oldLayout == vk::ImageLayout::eUndefined ? vk::PipelineStageFlagBits::eTopOfPipe : vk::PipelineStageFlagBits::eFragmentShader,
+                         vk::PipelineStageFlagBits::eColorAttachmentOutput);
+
+        SlangGlobals globals{};
+        globals.mvp[0] = globals.mvp[5] = globals.mvp[10] = globals.mvp[15] = 1.0f;
+        SetSlangSize(globals.outputSize, target.extent);
+        SetSlangSize(globals.finalViewportSize, s_swapExtent);
+        SetSlangSize(globals.sourceSize, current.extent);
+        SetSlangSize(globals.originalSize, original.extent);
+        void* uniformData = s_device.mapMemory(pass.uniformMemories[s_currentFrame], 0, sizeof(globals));
+        std::memcpy(uniformData, &globals, sizeof(globals));
+        s_device.flushMappedMemoryRanges(vk::MappedMemoryRange(pass.uniformMemories[s_currentFrame], 0, sizeof(globals)));
+        s_device.unmapMemory(pass.uniformMemories[s_currentFrame]);
+
+        vk::DescriptorBufferInfo bufferInfo(pass.uniformBuffers[s_currentFrame], 0, sizeof(globals));
+        std::vector<vk::DescriptorImageInfo> imageInfos;
+        imageInfos.reserve(definition.samplers.size());
+        std::vector<vk::WriteDescriptorSet> writes;
+        writes.reserve(definition.samplers.size() + 1);
+        writes.emplace_back(pass.descriptorSets[s_currentFrame], 0, 0, 1,
+                            vk::DescriptorType::eUniformBuffer, nullptr, &bufferInfo);
+        for (const auto& sampler : definition.samplers)
+        {
+            SlangInput input = current;
+            if (sampler.name == "Original") input = original;
+            else if (sampler.name != "Source")
+            {
+                const auto alias = aliases.find(sampler.name);
+                if (alias != aliases.end()) input = alias->second;
+            }
+            imageInfos.emplace_back(definition.linear ? runtime->linearSampler : runtime->nearestSampler,
+                                    input.view, vk::ImageLayout::eShaderReadOnlyOptimal);
+            writes.emplace_back(pass.descriptorSets[s_currentFrame], sampler.binding, 0, 1,
+                                vk::DescriptorType::eCombinedImageSampler, &imageInfos.back());
+        }
+        s_device.updateDescriptorSets(writes, nullptr);
+
+        std::vector<uint8_t> pushConstants(pass.pushConstantSize, 0);
+        auto writeFloat = [&pushConstants, &definition](const std::string& name, float value) {
+            for (const auto& member : definition.pushConstants)
+                if (member.name == name && member.size >= sizeof(float))
+                    std::memcpy(pushConstants.data() + member.offset, &value, sizeof(float));
+        };
+        auto writeVec4 = [&pushConstants, &definition](const std::string& name, vk::Extent2D extent) {
+            const float values[4] = {static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                     extent.width ? 1.0f / extent.width : 0.0f,
+                                     extent.height ? 1.0f / extent.height : 0.0f};
+            for (const auto& member : definition.pushConstants)
+                if (member.name == name && member.size >= sizeof(values))
+                    std::memcpy(pushConstants.data() + member.offset, values, sizeof(values));
+        };
+        writeVec4("SourceSize", current.extent);
+        writeVec4("OriginalSize", original.extent);
+        writeVec4("OutputSize", target.extent);
+        writeVec4("FinalViewportSize", s_swapExtent);
+        for (const auto& parameter : preset->parameters)
+        {
+            writeFloat(parameter.id, parameter.value);
+            if (parameter.runtimeId != parameter.id) writeFloat(parameter.runtimeId, parameter.value);
+        }
+
+        vk::RenderPassBeginInfo renderInfo;
+        renderInfo.renderPass = runtime->renderPass;
+        renderInfo.framebuffer = target.framebuffer;
+        renderInfo.renderArea.extent = target.extent;
+        frame.cmd.beginRenderPass(renderInfo, vk::SubpassContents::eInline);
+        frame.cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pass.pipeline);
+        const vk::Viewport viewport(0.0f, 0.0f, static_cast<float>(target.extent.width),
+                                    static_cast<float>(target.extent.height), 0.0f, 1.0f);
+        frame.cmd.setViewport(0, viewport);
+        frame.cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), target.extent));
+        frame.cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pass.pipelineLayout, 0,
+                                     pass.descriptorSets[s_currentFrame], nullptr);
+        const vk::DeviceSize offset = 0;
+        frame.cmd.bindVertexBuffers(0, runtime->vertexBuffer, offset);
+        if (!pushConstants.empty())
+            frame.cmd.pushConstants(pass.pipelineLayout, vk::ShaderStageFlagBits::eVertex |
+                                    vk::ShaderStageFlagBits::eFragment, 0,
+                                    static_cast<uint32_t>(pushConstants.size()), pushConstants.data());
+        frame.cmd.draw(4, 1, 0, 0);
+        frame.cmd.endRenderPass();
+        vk::MemoryBarrier barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead);
+        frame.cmd.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                                  vk::PipelineStageFlagBits::eFragmentShader, {}, barrier, {}, {});
+        target.initialized = true;
+        current = {target.image, target.view, target.extent};
+        if (!definition.alias.empty()) aliases[definition.alias] = current;
+    }
+    if (coreLayout != vk::ImageLayout::eShaderReadOnlyOptimal)
+        TransitionLayout(frame.cmd, coreImage, vk::ImageLayout::eShaderReadOnlyOptimal, coreLayout,
+                         vk::AccessFlagBits::eShaderRead,
+                         vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                         vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eAllCommands);
+    output.image = current.image;
+    output.extent = current.extent;
+    output.valid = true;
+    return true;
 }
 
 void DestroyOverlayRenderTargets()
@@ -800,6 +1372,11 @@ void Shutdown()
         try { s_device.waitIdle(); } catch (...) {}
     }
 
+    for (auto& runtime : s_slangRuntimes)
+        DestroySlangRuntime(runtime);
+    s_slangRuntimes.clear();
+    s_activeSlangPreset = nullptr;
+
     ShutdownOverlayRendererInternal();
 
     if (s_negIface && s_negIface->destroy_device)
@@ -808,6 +1385,10 @@ void Shutdown()
 
     for (auto& f : s_frames)
     {
+        for (vk::Buffer buffer : f.deferredUploadBuffers)
+            if (buffer) s_device.destroyBuffer(buffer);
+        for (vk::DeviceMemory memory : f.deferredUploadMemories)
+            if (memory) s_device.freeMemory(memory);
         if (f.inflightFence)   s_device.destroyFence(f.inflightFence);
         if (f.acquireSemaphore) s_device.destroySemaphore(f.acquireSemaphore);
         if (f.renderSemaphore)  s_device.destroySemaphore(f.renderSemaphore);
@@ -859,6 +1440,12 @@ bool BeginFrame()
 
     // Wait for the previous use of this frame slot to complete on the GPU.
     (void)s_device.waitForFences(f.inflightFence, VK_TRUE, UINT64_MAX);
+    for (vk::Buffer buffer : f.deferredUploadBuffers)
+        if (buffer) s_device.destroyBuffer(buffer);
+    for (vk::DeviceMemory memory : f.deferredUploadMemories)
+        if (memory) s_device.freeMemory(memory);
+    f.deferredUploadBuffers.clear();
+    f.deferredUploadMemories.clear();
 
     try
     {
@@ -906,6 +1493,8 @@ void EndFrame()
     }
     PerFrame& f = s_frames[s_currentFrame];
     vk::Image swapImage = s_swapImages[s_currentImage];
+    const bool hasPendingOverlayUploads = !s_pendingOverlayUploads.empty();
+    RecordPendingOverlayUploads(f);
     static uint32_t tracedFrames = 0;
     const bool trace = tracedFrames < 3;
     if (trace)
@@ -934,7 +1523,7 @@ void EndFrame()
     // crashed switchVK before the core ever rendered.  Present can consume
     // the acquire semaphore directly, and the frame fence remains signalled
     // because this path has no GPU submission.
-    if (!sourceImage && !hasOverlayDraw)
+    if (!sourceImage && !hasOverlayDraw && !hasPendingOverlayUploads)
     {
         f.cmd.end();
         s_overlayDrawData = nullptr;
@@ -990,22 +1579,9 @@ void EndFrame()
         vk::Image coreImage(sourceImage->create_info.image);
         vk::ImageLayout coreLayout = static_cast<vk::ImageLayout>(sourceImage->image_layout);
 
-        // Bring core's image into TRANSFER_SRC. Core writes to it via the
-        // graphics pipeline (color attachment + final-layout transition to
-        // SHADER_READ_ONLY_OPTIMAL) on a separate submit; we wait on
-        // ALL_COMMANDS / MEMORY_READ|WRITE so anything it did is visible.
-        TransitionLayout(f.cmd, coreImage,
-                         coreLayout, vk::ImageLayout::eTransferSrcOptimal,
-                         vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-                         vk::AccessFlagBits::eTransferRead,
-                         vk::PipelineStageFlagBits::eAllCommands,
-                         vk::PipelineStageFlagBits::eTransfer);
-        if (trace)
-            VK_LOG_INFO("EndFrame[%u] source transition complete", tracedFrames);
-
-        // Blit core's image → swap image. Prefer the exact backing-image
-        // extent supplied by our core. The AV/video_refresh extent is merely
-        // logical and becomes wrong when Flycast renders above 480p.
+        // Prefer the exact backing-image extent supplied by our core. The
+        // AV/video_refresh extent is merely logical and becomes wrong when
+        // Flycast renders above 480p.
         const auto* imageExtent = static_cast<const GBAStationImageExtent*>(
             sourceImage->create_info.pNext);
         const bool hasImageExtent = imageExtent &&
@@ -1015,6 +1591,25 @@ void EndFrame()
             (s_sourceExtent.width ? s_sourceExtent.width : s_swapExtent.width);
         const uint32_t srcH = hasImageExtent ? imageExtent->height :
             (s_sourceExtent.height ? s_sourceExtent.height : s_swapExtent.height);
+        SlangOutput slangOutput;
+        const bool slangApplied = RenderSlangFrame(f, *sourceImage, {srcW, srcH}, slangOutput);
+        vk::Image blitSource = slangApplied ? slangOutput.image : coreImage;
+        vk::ImageLayout blitSourceLayout = slangApplied ? vk::ImageLayout::eShaderReadOnlyOptimal : coreLayout;
+        const uint32_t blitSourceW = slangApplied ? slangOutput.extent.width : srcW;
+        const uint32_t blitSourceH = slangApplied ? slangOutput.extent.height : srcH;
+
+        // A failed Slang chain deliberately falls back to the established
+        // transfer path instead of leaving a black or partially rendered image.
+        TransitionLayout(f.cmd, blitSource,
+                         blitSourceLayout, vk::ImageLayout::eTransferSrcOptimal,
+                         slangApplied ? vk::AccessFlagBits::eShaderRead :
+                                        (vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite),
+                         vk::AccessFlagBits::eTransferRead,
+                         slangApplied ? vk::PipelineStageFlagBits::eFragmentShader : vk::PipelineStageFlagBits::eAllCommands,
+                         vk::PipelineStageFlagBits::eTransfer);
+        if (trace)
+            VK_LOG_INFO("EndFrame[%u] source transition complete", tracedFrames);
+
         static uint32_t lastSrcW = 0;
         static uint32_t lastSrcH = 0;
         static uint32_t lastLogicalW = 0;
@@ -1067,26 +1662,28 @@ void EndFrame()
         blit.srcSubresource.baseArrayLayer = 0;
         blit.srcSubresource.layerCount = 1;
         blit.srcOffsets[0] = vk::Offset3D(0, 0, 0);
-        blit.srcOffsets[1] = vk::Offset3D(static_cast<int32_t>(srcW),
-                                          static_cast<int32_t>(srcH), 1);
+        blit.srcOffsets[1] = vk::Offset3D(static_cast<int32_t>(blitSourceW),
+                                          static_cast<int32_t>(blitSourceH), 1);
         blit.dstSubresource = blit.srcSubresource;
         blit.dstOffsets[0] = vk::Offset3D(dstX0, dstY0, 0);
         blit.dstOffsets[1] = vk::Offset3D(dstX1, dstY1, 1);
 
-        f.cmd.blitImage(coreImage, vk::ImageLayout::eTransferSrcOptimal,
+        f.cmd.blitImage(blitSource, vk::ImageLayout::eTransferSrcOptimal,
                         swapImage, vk::ImageLayout::eTransferDstOptimal,
                         blit, vk::Filter::eLinear);
         if (trace)
             VK_LOG_INFO("EndFrame[%u] blit complete src=%ux%u dst=%d,%d-%d,%d", tracedFrames,
                         srcW, srcH, dstX0, dstY0, dstX1, dstY1);
 
-        // Restore core's image layout so the core can keep using it.
-        TransitionLayout(f.cmd, coreImage,
-                         vk::ImageLayout::eTransferSrcOptimal, coreLayout,
+        // Restore the source image layout. The Slang executor already put the
+        // core image back in the layout owned by the libretro core.
+        TransitionLayout(f.cmd, blitSource,
+                         vk::ImageLayout::eTransferSrcOptimal, blitSourceLayout,
                          vk::AccessFlagBits::eTransferRead,
-                         vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                         slangApplied ? vk::AccessFlagBits::eShaderRead :
+                                        (vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite),
                          vk::PipelineStageFlagBits::eTransfer,
-                         vk::PipelineStageFlagBits::eAllCommands);
+                         slangApplied ? vk::PipelineStageFlagBits::eFragmentShader : vk::PipelineStageFlagBits::eAllCommands);
         if (trace)
             VK_LOG_INFO("EndFrame[%u] source restore complete", tracedFrames);
     }
@@ -1302,6 +1899,11 @@ void SetOverlayDrawData(ImDrawData* drawData)
     s_overlayDrawData = drawData;
 }
 
+void SetSlangPreset(const GBAStationSlang::Preset* preset)
+{
+    s_activeSlangPreset = preset;
+}
+
 ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, uint32_t height)
 {
     if (!s_overlayReady || !s_device || !s_commandPool || !rgba || width == 0 || height == 0)
@@ -1312,7 +1914,6 @@ ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, 
     OverlayTextureResource texture{};
     vk::Buffer stagingBuffer;
     vk::DeviceMemory stagingMemory;
-    vk::CommandBuffer commandBuffer;
 
     try
     {
@@ -1399,54 +2000,14 @@ ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, 
         samplerInfo.maxLod = 0.0f;
         texture.sampler = s_device.createSampler(samplerInfo);
 
-        vk::CommandBufferAllocateInfo commandAlloc(s_commandPool, vk::CommandBufferLevel::ePrimary, 1);
-        commandBuffer = s_device.allocateCommandBuffers(commandAlloc)[0];
-        commandBuffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-        TransitionLayout(commandBuffer, texture.image,
-                         vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
-                         {}, vk::AccessFlagBits::eTransferWrite,
-                         vk::PipelineStageFlagBits::eTopOfPipe,
-                         vk::PipelineStageFlagBits::eTransfer);
-
-        vk::BufferImageCopy region;
-        region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
-        region.imageSubresource.layerCount = 1;
-        region.imageExtent = vk::Extent3D(width, height, 1);
-        commandBuffer.copyBufferToImage(stagingBuffer, texture.image,
-                                        vk::ImageLayout::eTransferDstOptimal,
-                                        region);
-
-        TransitionLayout(commandBuffer, texture.image,
-                         vk::ImageLayout::eTransferDstOptimal,
-                         vk::ImageLayout::eShaderReadOnlyOptimal,
-                         vk::AccessFlagBits::eTransferWrite,
-                         vk::AccessFlagBits::eShaderRead,
-                         vk::PipelineStageFlagBits::eTransfer,
-                         vk::PipelineStageFlagBits::eFragmentShader);
-
-        commandBuffer.end();
-
-        vk::SubmitInfo submit;
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &commandBuffer;
-        {
-            std::lock_guard<std::mutex> guard(s_queueMutex);
-            s_queue.submit(submit, VK_NULL_HANDLE);
-            s_queue.waitIdle();
-        }
-
-        s_device.freeCommandBuffers(s_commandPool, commandBuffer);
-        commandBuffer = nullptr;
-        s_device.destroyBuffer(stagingBuffer);
-        stagingBuffer = nullptr;
-        s_device.freeMemory(stagingMemory);
-        stagingMemory = nullptr;
-
         texture.descriptor = ImGui_ImplVulkan_AddTexture(static_cast<VkSampler>(texture.sampler),
                                                          static_cast<VkImageView>(texture.view),
                                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         s_overlayTextures.push_back(texture);
+        s_pendingOverlayUploads.push_back({stagingBuffer, stagingMemory, texture.image, width, height});
+        stagingBuffer = nullptr;
+        stagingMemory = nullptr;
+        VK_LOG_INFO("Overlay texture queued for frame upload: %ux%u", width, height);
         return (ImTextureID)texture.descriptor;
     }
     catch (const vk::SystemError& e)
@@ -1458,7 +2019,6 @@ ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, 
         VK_LOG_ERROR("Overlay texture creation failed: %s", e.what());
     }
 
-    if (commandBuffer) s_device.freeCommandBuffers(s_commandPool, commandBuffer);
     if (stagingBuffer) s_device.destroyBuffer(stagingBuffer);
     if (stagingMemory) s_device.freeMemory(stagingMemory);
     DestroyOverlayTextureResource(texture, false);
@@ -1470,17 +2030,14 @@ void DestroyOverlayTexture(ImTextureID textureId)
     if (!textureId || !s_device)
         return;
 
-    VkDescriptorSet descriptor = (VkDescriptorSet)textureId;
-    auto it = std::find_if(s_overlayTextures.begin(), s_overlayTextures.end(),
-                           [descriptor](const OverlayTextureResource& texture) {
-                               return texture.descriptor == descriptor;
-                           });
-    if (it == s_overlayTextures.end())
-        return;
-
-    try { s_device.waitIdle(); } catch (...) {}
-    DestroyOverlayTextureResource(*it, true);
-    s_overlayTextures.erase(it);
+    // A mask can be replaced while the core still has command buffers queued
+    // against the same Vulkan queue.  Waiting for the whole device here was
+    // the source of ErrorDeviceLost on Switch NVK.  Keep retired resources
+    // alive until overlay shutdown; masks are small and replacement is rare.
+    // This trades a bounded amount of menu-session memory for correct queue
+    // ownership and avoids tearing down a descriptor still referenced by an
+    // in-flight ImGui draw list.
+    VK_LOG_INFO("Overlay texture retired; deferred until overlay shutdown");
 }
 
 const retro_hw_render_interface_vulkan* GetHwRenderInterface()

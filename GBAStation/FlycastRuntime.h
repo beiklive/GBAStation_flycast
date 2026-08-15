@@ -109,10 +109,13 @@ private:
     int gameDisplayMode_ = -1;
     std::string gameScreenLayout_;
     std::string gameInternalResolution_;
+    int gameIntegerScale_ = 0;
     bool gameMaskEnabled_ = false;
     std::string gameMaskPath_;
     bool gameShaderEnabled_ = false;
     std::string gameShaderPath_;
+    std::vector<std::string> gameShaderParamNames_;
+    std::vector<float> gameShaderParamValues_;
     std::string launchDiscPath_;
     std::string activeDiscPath_;
     std::string lastActiveDiscPath_;

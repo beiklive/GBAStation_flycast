@@ -709,9 +709,9 @@ bool FlycastRuntime::InitOverlay(const std::string &romPath)
     overlay_->SetHost(overlayHost_.get());
     // Prefer the launcher-supplied title; fall back to the rom filename.
     overlay_->SetGameTitle(titleArg_.empty() ? GameTitleFromPath(romPath) : titleArg_);
-    overlay_->SetGameDisplaySettings(gameDisplayMode_, gameScreenLayout_, gameInternalResolution_);
+    overlay_->SetGameDisplaySettings(gameDisplayMode_, gameScreenLayout_, gameInternalResolution_, gameIntegerScale_);
     overlay_->SetMaskSettings(gameMaskEnabled_, gameMaskPath_);
-    overlay_->SetShaderSettings(gameShaderEnabled_, gameShaderPath_);
+    overlay_->SetShaderSettings(gameShaderEnabled_, gameShaderPath_, gameShaderParamNames_, gameShaderParamValues_);
     overlayReady_ = true;
     LOG_INFO("OVERLAY", "GBAStation overlay initialized");
     return true;
@@ -752,6 +752,7 @@ void FlycastRuntime::RenderOverlayFrame(float deltaTime)
                      static_cast<int>(width), static_cast<int>(height));
     ImGui::Render();
     GBAStationVulkan::SetOverlayDrawData(ImGui::GetDrawData());
+    GBAStationVulkan::SetSlangPreset(overlay_->IsShaderEnabled() ? overlay_->ShaderPreset() : nullptr);
 }
 
 void FlycastRuntime::ApplyCoreInput(const FrameInput &input)
@@ -1420,10 +1421,13 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
     gameDisplayMode_ = -1;
     gameScreenLayout_.clear();
     gameInternalResolution_.clear();
+    gameIntegerScale_ = 0;
     gameMaskEnabled_ = false;
     gameMaskPath_.clear();
     gameShaderEnabled_ = false;
     gameShaderPath_.clear();
+    gameShaderParamNames_.clear();
+    gameShaderParamValues_.clear();
     if (romPath.empty())
         return;
 
@@ -1456,6 +1460,16 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
                 savePath_ = item.value("savePath", std::string());
                 gameDisplayMode_ = item.value("displayMode", -1);
                 gameScreenLayout_ = item.value("ndsScreenLayout", std::string());
+                if (const auto integerScale = item.find("ndsIntegerScale"); integerScale != item.end())
+                {
+                    if (integerScale->is_number_integer() || integerScale->is_number_unsigned())
+                        gameIntegerScale_ = std::clamp(integerScale->get<int>(), 0, 5);
+                    else if (integerScale->is_boolean() && integerScale->get<bool>())
+                        // Older Flycast builds stored this as a boolean. The
+                        // layout field still carries the exact multiplier when
+                        // available, so use 1x only as a safe fallback.
+                        gameIntegerScale_ = 1;
+                }
                 if (const auto it = item.find("reicastInternalResolution");
                     it != item.end() && it->is_string()) {
                     gameInternalResolution_ = it->get<std::string>();
@@ -1473,6 +1487,12 @@ void FlycastRuntime::LoadFlycastPlayStats(const std::string &romPath)
                 gameMaskPath_ = item.value("overlayPath", std::string());
                 gameShaderEnabled_ = item.value("shaderEnabled", false);
                 gameShaderPath_ = item.value("shaderPath", std::string());
+                if (item.contains("shaderParaNames") && item["shaderParaNames"].is_array())
+                    for (const auto &name : item["shaderParaNames"])
+                        if (name.is_string()) gameShaderParamNames_.push_back(name.get<std::string>());
+                if (item.contains("shaderParaValues") && item["shaderParaValues"].is_array())
+                    for (const auto &value : item["shaderParaValues"])
+                        if (value.is_number()) gameShaderParamValues_.push_back(value.get<float>());
                 item["playCount"] = playCount_;
                 // Close the read stream first: the Switch stdio/fs layer refuses a
                 // second handle (write/trunc) on a file that is still open for read.
@@ -1518,13 +1538,22 @@ void FlycastRuntime::SaveFlycastDisplaySettings()
                     continue;
                 item["displayMode"] = overlay_->GetGameDisplayModeIndex();
                 item["ndsScreenLayout"] = overlay_->GetGameScreenLayout();
-                item["ndsIntegerScale"] = overlay_->GetGameDisplayModeIndex() == static_cast<int>(FlycastDisplayMode::Integer);
+                item["ndsIntegerScale"] = overlay_->GetGameIntegerScale();
                 if (overlayHost_)
                     item["reicastInternalResolution"] = overlayHost_->GetCoreOption("reicast_internal_resolution", "640x480");
                 item["overlayEnabled"] = overlay_->IsMaskEnabled();
                 item["overlayPath"] = overlay_->MaskPath();
                 item["shaderEnabled"] = overlay_->IsShaderEnabled();
                 item["shaderPath"] = overlay_->ShaderPath();
+                item["shaderParaPath"] = overlay_->ShaderPath();
+                item["shaderParaNames"] = nlohmann::json::array();
+                item["shaderParaValues"] = nlohmann::json::array();
+                for (const GBAStationSlang::Parameter &parameter : overlay_->ShaderParameters())
+                {
+                    if (!parameter.editable) continue;
+                    item["shaderParaNames"].push_back(parameter.id);
+                    item["shaderParaValues"].push_back(parameter.value);
+                }
                 file.close();
                 std::ofstream out(dbPath, std::ios::trunc);
                 if (out)

@@ -16,6 +16,7 @@
 #include <mutex>
 #include <vector>
 
+namespace GBAStationSlang { struct Preset; }
 struct ImDrawData;
 
 #ifdef __SWITCH__
@@ -80,6 +81,10 @@ bool InitOverlayRenderer();
 void ShutdownOverlayRenderer();
 void BeginOverlayFrame();
 void SetOverlayDrawData(ImDrawData* drawData);
+// The overlay owns preset parsing and parameter editing. The Vulkan frontend
+// consumes that validated preset during EndFrame; nullptr selects the raw
+// game-image blit path.
+void SetSlangPreset(const GBAStationSlang::Preset* preset);
 ImTextureID CreateOverlayTextureRGBA(const unsigned char* rgba, uint32_t width, uint32_t height);
 void DestroyOverlayTexture(ImTextureID texture);
 

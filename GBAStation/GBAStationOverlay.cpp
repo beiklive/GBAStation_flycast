@@ -19,6 +19,7 @@
 #include <cmath>
 #include <ctime>
 #include <dirent.h>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <string_view>
@@ -32,6 +33,7 @@
 #include <string>
 
 static std::string NormalizeDiscPath(const std::string &path);
+namespace { bool PickerAtRoot(const std::string &directory, const std::string &root); }
 
 static float OverlayScale()
 {
@@ -704,8 +706,10 @@ void GBAStationOverlay::Render(ImVec2 displaySize, unsigned int gameTexture, flo
     {
         RenderOverlayBackground(fgDrawList, displaySize);
         RenderGBAStationMenu(fgDrawList, displaySize);
-
-        RenderHelpersBar(fgDrawList, displaySize);
+        // FBNeo file picker and settings sidebar draw their own controller
+        // legend.  Do not paint the generic menu legend over that footer.
+        if (m_settingsSidebar == SettingsSidebar::None)
+            RenderHelpersBar(fgDrawList, displaySize);
     }
 
     // RA alerts always render (even during gameplay, not just when menu is open)
@@ -1090,10 +1094,6 @@ void GBAStationOverlay::RenderTitleCard(ImDrawList *dl, ImVec2 displaySize)
     {
         titleStr = tr("emulator_select_disc");
     }
-    else if (m_currentMenu == OverlayMenu::MaskSelect)
-    {
-        titleStr = m_assetPickerShader ? tr("选择着色器") : tr("选择遮罩图片");
-    }
 
     // The launcher bakes newlines into the title for its own wrapping; flatten
     // them so we can re-wrap and center each line ourselves.
@@ -1169,6 +1169,14 @@ void GBAStationOverlay::RenderTitleCard(ImDrawList *dl, ImVec2 displaySize)
 
 void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
 {
+    // Settings sidebars are pages, not modal overlays.  Drawing the main menu
+    // underneath made the file picker visually and input-wise ambiguous.
+    if (m_settingsSidebar != SettingsSidebar::None)
+    {
+        RenderSettingsSidebar(dl, displaySize);
+        return;
+    }
+
     const float scale = OverlayScale();
     const float t = std::min(m_animTimer / 0.4f, 1.0f);
     const float ease = 1.0f - std::pow(1.0f - t, 3.0f);
@@ -1223,11 +1231,6 @@ void GBAStationOverlay::RenderGBAStationMenu(ImDrawList *dl, ImVec2 displaySize)
     if (m_currentMenu == OverlayMenu::DiscSelect)
     {
         RenderDiscBrowser(dl, displaySize);
-        return;
-    }
-    if (m_currentMenu == OverlayMenu::MaskSelect)
-    {
-        RenderMaskBrowser(dl, displaySize);
         return;
     }
 
@@ -2097,87 +2100,73 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
         return true;
     }
 
-    if (m_currentMenu == OverlayMenu::MaskSelect)
+    // FBNeo-style settings sidebar has its own focus model.  File browsing is
+    // a child page; selecting a file always returns to the relevant sidebar.
+    if (m_settingsSidebar != SettingsSidebar::None)
     {
-        const int count = static_cast<int>(m_maskBrowserEntries.size());
-        if (count > 0 && (upPressed || downPressed))
-        {
-            m_maskBrowserSelection = (m_maskBrowserSelection + (upPressed ? count - 1 : 1)) % count;
-            const float rowH = 58.0f * OverlayScale();
-            const float contentH = 520.0f * OverlayScale();
-            const float maxScroll = std::max(0.0f, count * rowH - contentH);
-            m_maskBrowserTargetScrollY = std::clamp(m_maskBrowserSelection * rowH - contentH * 0.5f + rowH * 0.5f,
-                                                     0.0f, maxScroll);
+        const bool shader = m_settingsSidebar == SettingsSidebar::Shader;
+        const bool shaderPicker = m_settingsSidebar == SettingsSidebar::ShaderFilePicker;
+        const bool maskPicker = m_settingsSidebar == SettingsSidebar::MaskFilePicker;
+        const auto &entries = shaderPicker ? m_shaderFileEntries : m_maskFileEntries;
+        const int parameterCount = shader ? static_cast<int>(m_shaderPreset.parameters.size()) : 0;
+        const int count = shader ? 2 + (parameterCount > 0 ? 1 + parameterCount : 0) :
+            ((shaderPicker || maskPicker) ? static_cast<int>(entries.size()) : 2);
+        if (count > 0 && upPressed)
+            m_settingsSidebarSelection = (m_settingsSidebarSelection + count - 1) % count;
+        if (count > 0 && downPressed)
+            m_settingsSidebarSelection = (m_settingsSidebarSelection + 1) % count;
+        if ((upPressed || downPressed) && count > 0)
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
-        }
-        if (confirmPressed && count > 0)
+
+        if (shader && (leftPressed || rightPressed) && m_settingsSidebarSelection >= 3)
         {
-            const MaskBrowserEntry &entry = m_maskBrowserEntries[m_maskBrowserSelection];
-            if (entry.isDir)
+            GBAStationSlang::Parameter &parameter = m_shaderPreset.parameters[m_settingsSidebarSelection - 3];
+            if (parameter.editable)
             {
-                m_maskBrowserDir = entry.path;
-                RefreshMaskBrowser();
+                const float direction = rightPressed ? 1.0f : -1.0f;
+                parameter.value = std::clamp(parameter.value + direction * parameter.step, parameter.minimum, parameter.maximum);
+                m_gameDisplaySettingsSaveRequested = true;
                 GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Focus);
             }
-            else
+        }
+        if (confirmPressed)
+        {
+            if (shader && m_settingsSidebarSelection == 0)
+                m_shaderEnabled = !m_shaderEnabled;
+            else if (!shader && !shaderPicker && !maskPicker && m_settingsSidebarSelection == 0)
+                m_maskEnabled = !m_maskEnabled;
+            else if (shader && m_settingsSidebarSelection == 1)
+                OpenShaderFilePicker();
+            else if (!shader && !shaderPicker && !maskPicker && m_settingsSidebarSelection == 1)
+                OpenMaskFilePicker();
+            else if ((shaderPicker || maskPicker) && !entries.empty())
             {
-                if (m_assetPickerShader)
+                const FileEntry &entry = entries[m_settingsSidebarSelection];
+                if (entry.isDirectory)
                 {
-                    GBAStationSlang::Preset preset;
-                    std::string error;
-                    if (!GBAStationSlang::Load(entry.path, preset, error))
-                    {
-                        m_discBrowserNotice = error;
-                        m_discBrowserNoticeTimer = 3.0f;
-                        GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
-                        return true;
-                    }
-                    LOG_INFO("SLANG", "Preset validated: passes=%zu parameters=%zu path=%s",
-                             preset.passes.size(), preset.parameters.size(), entry.path.c_str());
-                    for (size_t passIndex = 0; passIndex < preset.passes.size(); ++passIndex)
-                    {
-                        const GBAStationSlang::Pass &pass = preset.passes[passIndex];
-                        LOG_INFO("SLANG", " pass %zu: %s vert=%zu words frag=%zu words samplers=%zu push=%zu",
-                                 passIndex, pass.path.c_str(), pass.vertexSpirv.size(),
-                                 pass.fragmentSpirv.size(), pass.samplers.size(), pass.pushConstants.size());
-                    }
-                    for (const GBAStationSlang::Parameter &parameter : preset.parameters)
-                        LOG_INFO("SLANG", " param %s -> %s value=%g initial=%g range=[%g,%g] step=%g editable=%d",
-                                 parameter.id.c_str(), parameter.runtimeId.c_str(), parameter.value,
-                                 parameter.initial, parameter.minimum, parameter.maximum, parameter.step,
-                                 parameter.editable ? 1 : 0);
-                    for (const std::string &warning : preset.warnings)
-                        LOG_WARN("SLANG", "%s", warning.c_str());
-                    SetShaderPreset(true, std::move(preset));
+                    if (shaderPicker) { m_shaderFilePickerSelections[m_shaderFilePickerDirectory] = m_settingsSidebarSelection; ReloadShaderFilePicker(entry.path); }
+                    else { m_maskFilePickerSelections[m_maskFilePickerDirectory] = m_settingsSidebarSelection; ReloadMaskFilePicker(entry.path); }
                 }
-                else
-                    SetMaskSettings(true, entry.path);
-                m_gameDisplaySettingsSaveRequested = true;
-                m_currentMenu = OverlayMenu::Settings;
-                m_quickMenuSelection = 4;
-                m_settingsSelection = m_assetPickerShader ? 5 : 4;
-                m_sidebarFocused = false;
-                m_animTimer = 0.4f;
-                GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
+                else if (shaderPicker)
+                {
+                    GBAStationSlang::Preset preset; std::string error;
+                    if (GBAStationSlang::Load(entry.path, preset, error)) { SetShaderPreset(true, std::move(preset)); m_settingsSidebar = SettingsSidebar::Shader; m_settingsSidebarSelection = 1; }
+                    else { m_discBrowserNotice = error; m_discBrowserNoticeTimer = 3.0f; GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel); return true; }
+                }
+                else { SetMaskSettings(true, entry.path); m_settingsSidebar = SettingsSidebar::Mask; m_settingsSidebarSelection = 1; }
             }
+            m_gameDisplaySettingsSaveRequested = true;
+            GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Confirm);
         }
         if (backPressed)
         {
-            if (NormalizeDiscPath(m_maskBrowserDir) != NormalizeDiscPath(m_maskBrowserRoot))
-            {
-                const size_t slash = m_maskBrowserDir.find_last_of("/\\");
-                m_maskBrowserDir = slash == std::string::npos ? m_maskBrowserRoot : m_maskBrowserDir.substr(0, slash);
-                if (NormalizeDiscPath(m_maskBrowserDir).size() < NormalizeDiscPath(m_maskBrowserRoot).size())
-                    m_maskBrowserDir = m_maskBrowserRoot;
-                RefreshMaskBrowser();
-            }
-            else
-            {
-                m_currentMenu = OverlayMenu::Settings;
-                m_quickMenuSelection = 4;
-                m_settingsSelection = m_assetPickerShader ? 5 : 4;
-                m_sidebarFocused = false;
-            }
+            if (shaderPicker && !PickerAtRoot(m_shaderFilePickerDirectory, m_shaderFilePickerRoot))
+                ReloadShaderFilePicker(std::filesystem::path(m_shaderFilePickerDirectory).parent_path().string(), m_shaderFilePickerDirectory);
+            else if (maskPicker && !PickerAtRoot(m_maskFilePickerDirectory, m_maskFilePickerRoot))
+                ReloadMaskFilePicker(std::filesystem::path(m_maskFilePickerDirectory).parent_path().string(), m_maskFilePickerDirectory);
+            else if (shaderPicker) { m_settingsSidebar = SettingsSidebar::Shader; m_settingsSidebarSelection = 1; }
+            else if (maskPicker) { m_settingsSidebar = SettingsSidebar::Mask; m_settingsSidebarSelection = 1; }
+            else CloseSettingsSidebar();
             GBAStationAudio::PlayUiSoundGlobal(GBAStationAudio::UiSound::Cancel);
         }
         return true;
@@ -2395,6 +2384,8 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
             {
                 if (m_displayMode == FlycastDisplayMode::Display)
                     m_displaySize = m_displaySize == FlycastDisplaySize::_4_3 ? FlycastDisplaySize::_16_9 : FlycastDisplaySize::_4_3;
+                ApplyScalingSettings(true);
+                m_gameDisplaySettingsSaveRequested = true;
                 break;
             }
             case 3:
@@ -2569,16 +2560,10 @@ bool GBAStationOverlay::HandleInput(const GBAStation::FrameInput &input)
                     if (m_displayMode == FlycastDisplayMode::Integer) { int scale = std::clamp(static_cast<int>(m_displaySize) - 3, 1, 5); m_displaySize = static_cast<FlycastDisplaySize>((scale % 5) + 4); ApplyScalingSettings(true); m_gameDisplaySettingsSaveRequested = true; }
                     break;
                 case 4:
-                    OpenMaskBrowser(false);
-                    m_currentMenu = OverlayMenu::MaskSelect;
-                    m_sidebarFocused = false;
-                    m_animTimer = 0.4f;
+                    OpenSettingsSidebar(false);
                     return true;
                 case 5:
-                    OpenMaskBrowser(true);
-                    m_currentMenu = OverlayMenu::MaskSelect;
-                    m_sidebarFocused = false;
-                    m_animTimer = 0.4f;
+                    OpenSettingsSidebar(true);
                     return true;
                 }
             }
@@ -2758,140 +2743,218 @@ void GBAStationOverlay::OpenDiscBrowser()
     RefreshDiscBrowser();
 }
 
-static bool IsMaskImagePath(const std::string &path)
+bool GBAStationOverlay::IsMaskImagePath(const std::string &path)
 {
-    const size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos)
-        return false;
-    std::string extension = path.substr(dot);
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return extension == ".png" || extension == ".jpg" || extension == ".jpeg" ||
-           extension == ".bmp" || extension == ".tga" || extension == ".webp";
+    std::string ext = std::filesystem::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga" || ext == ".webp";
 }
 
-static bool IsSlangPresetPath(const std::string &path)
+bool GBAStationOverlay::IsShaderPath(const std::string &path)
 {
-    const size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos)
-        return false;
-    std::string extension = path.substr(dot);
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    // A .slang file is only one pass and has no preset topology.  Selecting
-    // it used to fail after the picker closed because Load() correctly expects
-    // the shaders=N contract of .slangp.
-    return extension == ".slangp";
+    std::string ext = std::filesystem::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext == ".slangp";
 }
 
-void GBAStationOverlay::OpenMaskBrowser(bool shader)
+namespace {
+std::string PickerDirectory(const std::string &directory)
 {
-    // Keep browsing inside the user-managed overlay directory.  The fallback
-    // also makes desktop/debug builds work without an sdmc mount.
-    struct stat st{};
-    m_assetPickerShader = shader;
-    m_maskBrowserRoot = shader ? "sdmc:/GBAStation/shaders" : "sdmc:/GBAStation/overlays";
-    if (stat(m_maskBrowserRoot.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
-        m_maskBrowserRoot = shader ? "/GBAStation/shaders" : "/GBAStation/overlays";
-    m_maskBrowserDir = m_maskBrowserRoot;
-    m_maskBrowserSelection = 0;
-    m_maskBrowserScrollY = 0.0f;
-    m_maskBrowserTargetScrollY = 0.0f;
-    RefreshMaskBrowser();
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path path(directory.empty() ? "." : directory);
+    const fs::path canonical = fs::weakly_canonical(path, ec);
+    return (ec ? path.lexically_normal() : canonical).string();
 }
 
-void GBAStationOverlay::RefreshMaskBrowser()
+bool PickerAtRoot(const std::string &directory, const std::string &root)
 {
-    m_maskBrowserEntries.clear();
-    m_maskBrowserSelection = 0;
+    return PickerDirectory(directory) == PickerDirectory(root);
+}
 
-    const std::string root = NormalizeDiscPath(m_maskBrowserRoot);
-    const std::string current = NormalizeDiscPath(m_maskBrowserDir);
-    if (current != root)
-    {
-        const size_t slash = current.find_last_of('/');
-        if (slash != std::string::npos && slash > 0)
-            m_maskBrowserEntries.push_back({"..", current.substr(0, slash), true});
+std::string PickerFileName(const std::string &path)
+{
+    return path.empty() ? std::string() : std::filesystem::path(path).filename().string();
+}
+}
+
+void GBAStationOverlay::ReloadMaskFilePicker(const std::string &directory, const std::string &focusPath)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path selected(directory);
+    if (selected.empty() || !fs::is_directory(selected, ec)) selected = "sdmc:/";
+    if (!fs::is_directory(selected, ec)) selected = "/";
+    m_maskFilePickerDirectory = PickerDirectory(selected.string());
+    m_maskFileEntries.clear();
+    m_settingsSidebarSelection = m_maskFilePickerSelections[m_maskFilePickerDirectory];
+    if (!PickerAtRoot(m_maskFilePickerDirectory, m_maskFilePickerRoot) && selected.has_parent_path())
+        m_maskFileEntries.push_back({"...", PickerDirectory(selected.parent_path().string()), true});
+    std::vector<FileEntry> dirs, files;
+    for (fs::directory_iterator it(selected, ec), end; !ec && it != end; it.increment(ec)) {
+        const fs::directory_entry &entry = *it;
+        std::error_code entryError;
+        FileEntry item{entry.path().filename().string(), entry.path().string(), fs::is_directory(entry.path(), entryError)};
+        if (entryError || item.name.empty()) continue;
+        if (item.isDirectory) dirs.push_back(std::move(item));
+        else if (IsMaskImagePath(item.path)) files.push_back(std::move(item));
     }
-
-    DIR *directory = opendir(m_maskBrowserDir.c_str());
-    if (!directory)
-        return;
-    while (dirent *entry = readdir(directory))
-    {
-        const std::string name = entry->d_name;
-        if (name == "." || name == "..")
-            continue;
-        const std::string path = NormalizeDiscPath(m_maskBrowserDir + "/" + name);
-        struct stat st{};
-        const bool isDir = stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-        if (isDir || (m_assetPickerShader ? IsSlangPresetPath(name) : IsMaskImagePath(name)))
-            m_maskBrowserEntries.push_back({name, path, isDir});
-    }
-    closedir(directory);
-    std::sort(m_maskBrowserEntries.begin() + (current == root ? 0 : 1), m_maskBrowserEntries.end(),
-              [](const MaskBrowserEntry &a, const MaskBrowserEntry &b) {
-                  if (a.isDir != b.isDir) return a.isDir > b.isDir;
-                  std::string left = a.name, right = b.name;
-                  std::transform(left.begin(), left.end(), left.begin(), ::tolower);
-                  std::transform(right.begin(), right.end(), right.begin(), ::tolower);
-                  return left < right;
-              });
+    const auto byName = [](const FileEntry &a, const FileEntry &b) { return a.name < b.name; };
+    std::sort(dirs.begin(), dirs.end(), byName); std::sort(files.begin(), files.end(), byName);
+    m_maskFileEntries.insert(m_maskFileEntries.end(), dirs.begin(), dirs.end());
+    m_maskFileEntries.insert(m_maskFileEntries.end(), files.begin(), files.end());
+    for (int i = 0; i < static_cast<int>(m_maskFileEntries.size()); ++i)
+        if (!focusPath.empty() && PickerDirectory(m_maskFileEntries[i].path) == PickerDirectory(focusPath)) m_settingsSidebarSelection = i;
+    m_settingsSidebarSelection = std::clamp(m_settingsSidebarSelection, 0, std::max(0, static_cast<int>(m_maskFileEntries.size()) - 1));
 }
 
-void GBAStationOverlay::RenderMaskBrowser(ImDrawList *dl, ImVec2 displaySize)
+void GBAStationOverlay::ReloadShaderFilePicker(const std::string &directory, const std::string &focusPath)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path selected(directory);
+    if (selected.empty() || !fs::is_directory(selected, ec)) selected = "sdmc:/";
+    if (!fs::is_directory(selected, ec)) selected = "/";
+    m_shaderFilePickerDirectory = PickerDirectory(selected.string());
+    m_shaderFileEntries.clear();
+    m_settingsSidebarSelection = m_shaderFilePickerSelections[m_shaderFilePickerDirectory];
+    if (!PickerAtRoot(m_shaderFilePickerDirectory, m_shaderFilePickerRoot) && selected.has_parent_path())
+        m_shaderFileEntries.push_back({"...", PickerDirectory(selected.parent_path().string()), true});
+    std::vector<FileEntry> dirs, files;
+    for (fs::directory_iterator it(selected, ec), end; !ec && it != end; it.increment(ec)) {
+        const fs::directory_entry &entry = *it;
+        std::error_code entryError;
+        FileEntry item{entry.path().filename().string(), entry.path().string(), fs::is_directory(entry.path(), entryError)};
+        if (entryError || item.name.empty()) continue;
+        if (item.isDirectory) dirs.push_back(std::move(item));
+        else if (IsShaderPath(item.path)) files.push_back(std::move(item));
+    }
+    const auto byName = [](const FileEntry &a, const FileEntry &b) { return a.name < b.name; };
+    std::sort(dirs.begin(), dirs.end(), byName); std::sort(files.begin(), files.end(), byName);
+    m_shaderFileEntries.insert(m_shaderFileEntries.end(), dirs.begin(), dirs.end());
+    m_shaderFileEntries.insert(m_shaderFileEntries.end(), files.begin(), files.end());
+    for (int i = 0; i < static_cast<int>(m_shaderFileEntries.size()); ++i)
+        if (!focusPath.empty() && PickerDirectory(m_shaderFileEntries[i].path) == PickerDirectory(focusPath)) m_settingsSidebarSelection = i;
+    m_settingsSidebarSelection = std::clamp(m_settingsSidebarSelection, 0, std::max(0, static_cast<int>(m_shaderFileEntries.size()) - 1));
+}
+
+void GBAStationOverlay::OpenMaskFilePicker()
+{
+    const std::string root = PickerDirectory("sdmc:/");
+    m_maskFilePickerRoot = root;
+    const std::string starting = m_maskPath.empty() ? root : std::filesystem::path(m_maskPath).parent_path().string();
+    ReloadMaskFilePicker(starting, m_maskPath);
+    m_settingsSidebar = SettingsSidebar::MaskFilePicker;
+}
+
+void GBAStationOverlay::OpenShaderFilePicker()
+{
+    const std::string root = PickerDirectory("sdmc:/");
+    m_shaderFilePickerRoot = root;
+    const std::string starting = m_shaderPath.empty() ? root : std::filesystem::path(m_shaderPath).parent_path().string();
+    ReloadShaderFilePicker(starting, m_shaderPath);
+    m_settingsSidebar = SettingsSidebar::ShaderFilePicker;
+}
+
+void GBAStationOverlay::OpenSettingsSidebar(bool shader)
+{
+    m_settingsSidebar = shader ? SettingsSidebar::Shader : SettingsSidebar::Mask;
+    m_settingsSidebarSelection = 0;
+    m_sidebarFocused = false;
+}
+
+void GBAStationOverlay::CloseSettingsSidebar()
+{
+    m_settingsSidebar = SettingsSidebar::None;
+    m_settingsSidebarSelection = 0;
+    m_sidebarFocused = false;
+}
+
+void GBAStationOverlay::RenderFilePicker(ImDrawList *dl, ImVec2 displaySize, bool shaderPicker)
 {
     const float scale = OverlayScale();
     ImFont *font = ImGui::GetFont();
-    if (!font)
-        return;
-    const float panelX = 48.0f * scale;
-    const float panelY = 116.0f * scale;
-    const float panelW = displaySize.x - 96.0f * scale;
-    const float panelBottom = displaySize.y - 70.0f * scale;
-    const float rowH = 58.0f * scale;
-    const float listY = panelY + 116.0f * scale;
-    const float listH = panelBottom - listY - 12.0f * scale;
-    const int visible = std::max(1, std::min(static_cast<int>(listH / rowH),
-                                               static_cast<int>(m_maskBrowserEntries.size())));
-    const ImVec2 panelMin(panelX, panelY), panelMax(panelX + panelW, panelBottom);
-    dl->AddRectFilled(panelMin, panelMax, IM_COL32(13, 22, 32, 244), 12.0f * scale);
-    dl->AddRect(panelMin, panelMax, IM_COL32(56, 96, 132, 180), 12.0f * scale, 0, 1.5f * scale);
-    dl->AddText(font, 26.0f * scale, panelMin + ImVec2(24.0f * scale, 18.0f * scale),
-                IM_COL32(240, 247, 255, 255), (m_assetPickerShader ? tr("选择着色器") : tr("选择遮罩图片")).c_str());
-    const std::string pathLine = m_maskBrowserDir.empty() ? m_maskBrowserRoot : m_maskBrowserDir;
-    dl->AddText(font, 18.0f * scale, panelMin + ImVec2(24.0f * scale, 58.0f * scale),
-                IM_COL32(184, 204, 224, 225), pathLine.c_str());
-    dl->AddText(font, 16.0f * scale, panelMin + ImVec2(24.0f * scale, 85.0f * scale),
-                IM_COL32(112, 204, 255, 220), (m_assetPickerShader ? tr("仅显示 SLANGP；B 返回着色器设置") : tr("仅显示 PNG、JPG、BMP、TGA、WEBP；B 返回画面设置")).c_str());
-    dl->AddLine(panelMin + ImVec2(20.0f * scale, 106.0f * scale),
-                ImVec2(panelMax.x - 20.0f * scale, panelMin.y + 106.0f * scale),
-                IM_COL32(0, 122, 204, 150), 1.0f * scale);
-    if (m_maskBrowserEntries.empty())
-    {
-        dl->AddText(font, 20.0f * scale, ImVec2(panelX + 24.0f * scale, listY + 18.0f * scale),
-                    IM_COL32(184, 204, 224, 230), (m_assetPickerShader ? tr("该目录没有可用的着色器") : tr("该目录没有可用的遮罩图片")).c_str());
-        return;
+    const auto &entries = shaderPicker ? m_shaderFileEntries : m_maskFileEntries;
+    const std::string &directory = shaderPicker ? m_shaderFilePickerDirectory : m_maskFilePickerDirectory;
+    const float margin = 62.0f * scale, top = 126.0f * scale, rowH = 62.0f * scale;
+    const float bottom = displaySize.y - 78.0f * scale;
+    const int visible = std::max(1, static_cast<int>((bottom - top) / rowH));
+    const int first = std::clamp(m_settingsSidebarSelection - visible / 2, 0,
+                                 std::max(0, static_cast<int>(entries.size()) - visible));
+    dl->AddRectFilled(ImVec2(0, 0), displaySize, IM_COL32(8, 18, 29, 244));
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(displaySize.x, 84.0f * scale), IM_COL32(4, 12, 21, 252));
+    dl->AddText(font, 29.0f * scale, ImVec2(margin, 30.0f * scale), IM_COL32(240, 247, 255, 255),
+                (shaderPicker ? tr("选择着色器") : tr("选择遮罩图片")).c_str());
+    std::string pathText = directory;
+    const float pathLimit = displaySize.x - margin * 2.0f;
+    while (font->CalcTextSizeA(16.0f * scale, FLT_MAX, 0.0f, pathText.c_str()).x > pathLimit && pathText.size() > 6) pathText.erase(pathText.begin());
+    if (pathText != directory) pathText = "..." + pathText;
+    dl->AddText(font, 16.0f * scale, ImVec2(margin, 88.0f * scale), IM_COL32(164, 194, 221, 230), pathText.c_str());
+    for (int i = first; i < static_cast<int>(entries.size()) && i < first + visible; ++i) {
+        const FileEntry &entry = entries[i]; const float y = top + (i - first) * rowH;
+        const ImVec2 a(margin, y), b(displaySize.x - margin, y + rowH - 7.0f * scale);
+        const bool selected = i == m_settingsSidebarSelection;
+        dl->AddRectFilled(a, b, selected ? IM_COL32(0, 88, 142, 190) : IM_COL32(255, 255, 255, 14), 7.0f * scale);
+        dl->AddRect(a, b, IM_COL32(255, 255, 255, selected ? 82 : 34), 7.0f * scale);
+        if (selected) dl->AddRect(a, b, IM_COL32(112, 204, 255, 255), 7.0f * scale, 0, 2.0f * scale);
+        const bool parent = entry.name == "...";
+        const ImU32 color = entry.isDirectory ? IM_COL32(112, 204, 255, 255) : IM_COL32(174, 202, 225, 210);
+        if (entry.isDirectory && !parent) dl->AddText(font, 20.0f * scale, ImVec2(a.x + 21.0f * scale, y + 18.0f * scale), color, ">");
+        dl->AddText(font, 20.0f * scale, ImVec2(a.x + (entry.isDirectory && !parent ? 60.0f : 28.0f) * scale, y + 18.0f * scale),
+                    selected ? IM_COL32(245, 250, 255, 255) : IM_COL32(207, 223, 238, 235), entry.name.c_str());
+        if (entry.isDirectory && !parent) dl->AddText(font, 22.0f * scale, ImVec2(b.x - 30.0f * scale, y + 16.0f * scale), color, ">");
     }
-    m_maskBrowserScrollY += (m_maskBrowserTargetScrollY - m_maskBrowserScrollY) * 0.25f;
-    const int first = std::clamp(static_cast<int>(m_maskBrowserScrollY / rowH), 0,
-                                 std::max(0, static_cast<int>(m_maskBrowserEntries.size()) - visible));
-    for (int row = 0; row < visible; ++row)
-    {
-        const int index = first + row;
-        if (index >= static_cast<int>(m_maskBrowserEntries.size())) break;
-        const float y = listY + row * rowH;
-        const bool selected = index == m_maskBrowserSelection;
-        const ImVec2 rowMin(panelX + 16.0f * scale, y), rowMax(panelMax.x - 16.0f * scale, y + rowH - 6.0f * scale);
-        dl->AddRectFilled(rowMin, rowMax, selected ? IM_COL32(0, 96, 158, 225) : IM_COL32(255, 255, 255, 9), 10.0f * scale);
-        if (selected)
-            dl->AddRect(rowMin, rowMax, IM_COL32(90, 190, 255, 220), 10.0f * scale, 0, 2.0f);
-        const MaskBrowserEntry &entry = m_maskBrowserEntries[index];
-        char icon[8];
-        EncodeUtf8(icon, entry.isDir ? 0xE2C8 : 0xE3B0);
-        dl->AddText(font, 26.0f * scale, rowMin + ImVec2(12.0f * scale, 12.0f * scale), IM_COL32(130, 190, 255, 235), icon);
-        dl->AddText(font, 21.0f * scale, rowMin + ImVec2(52.0f * scale, 15.0f * scale),
-                    selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(204, 224, 244, 225), entry.name.c_str());
+    if (entries.empty()) dl->AddText(font, 20.0f * scale, ImVec2(margin, top + 18.0f * scale), IM_COL32(170, 190, 210, 220), tr("此目录没有可用文件").c_str());
+    char iconB[8], iconA[8], iconPlus[8]; EncodeUtf8(iconB, 0xE0E1); EncodeUtf8(iconA, 0xE0E0); EncodeUtf8(iconPlus, 0xE0EF);
+    const float footerY = displaySize.y - 43.0f * scale; const ImU32 hint = IM_COL32(184, 204, 224, 230);
+    dl->AddText(font, 26.0f * scale, ImVec2(displaySize.x - 370.0f * scale, footerY - 14.0f * scale), hint, iconPlus);
+    dl->AddText(font, 18.0f * scale, ImVec2(displaySize.x - 342.0f * scale, footerY - 9.0f * scale), hint, tr("关闭").c_str());
+    dl->AddText(font, 26.0f * scale, ImVec2(displaySize.x - 245.0f * scale, footerY - 14.0f * scale), hint, iconB);
+    dl->AddText(font, 18.0f * scale, ImVec2(displaySize.x - 217.0f * scale, footerY - 9.0f * scale), hint, tr("上一级").c_str());
+    dl->AddText(font, 26.0f * scale, ImVec2(displaySize.x - 105.0f * scale, footerY - 14.0f * scale), hint, iconA);
+    dl->AddText(font, 18.0f * scale, ImVec2(displaySize.x - 77.0f * scale, footerY - 9.0f * scale), hint, tr("选择").c_str());
+}
+
+void GBAStationOverlay::RenderSettingsSidebar(ImDrawList *dl, ImVec2 displaySize)
+{
+    const float scale = OverlayScale(); ImFont *font = ImGui::GetFont();
+    const bool shader = m_settingsSidebar == SettingsSidebar::Shader;
+    const bool shaderPicker = m_settingsSidebar == SettingsSidebar::ShaderFilePicker;
+    const bool maskPicker = m_settingsSidebar == SettingsSidebar::MaskFilePicker;
+    if (shaderPicker || maskPicker) { RenderFilePicker(dl, displaySize, shaderPicker); return; }
+    const float panelW = 510.0f * scale, x = displaySize.x - panelW, rowH = 58.0f * scale, top = 132.0f * scale, bottom = displaySize.y - 76.0f * scale;
+    dl->AddRectFilled(ImVec2(x, 0), displaySize, IM_COL32(12, 26, 39, 240));
+    dl->AddRectFilled(ImVec2(x, 0), ImVec2(x + 5.0f * scale, displaySize.y), IM_COL32(0, 122, 204, 210));
+    dl->AddText(font, 27.0f * scale, ImVec2(x + 34.0f * scale, 58.0f * scale), IM_COL32(240, 247, 255, 255), (shader ? tr("着色器设置") : tr("遮罩设置")).c_str());
+    dl->AddLine(ImVec2(x + 26.0f * scale, 104.0f * scale), ImVec2(displaySize.x - 26.0f * scale, 104.0f * scale), IM_COL32(112, 204, 255, 255), 1.0f);
+    const int parameterCount = shader ? static_cast<int>(m_shaderPreset.parameters.size()) : 0;
+    const int count = 2 + (parameterCount > 0 ? 1 + parameterCount : 0);
+    const int visible = std::max(1, static_cast<int>((bottom - top) / rowH));
+    const int first = std::clamp(m_settingsSidebarSelection - visible / 2, 0, std::max(0, count - visible));
+    for (int i = first; i < count && i < first + visible; ++i) {
+        const float y = top + (i - first) * rowH; const ImVec2 a(x + 24.0f * scale, y), b(displaySize.x - 24.0f * scale, y + rowH - 5.0f * scale);
+        const bool selected = i == m_settingsSidebarSelection;
+        dl->AddRectFilled(a, b, selected ? IM_COL32(0, 77, 128, 190) : IM_COL32(255, 255, 255, 13)); dl->AddRect(a, b, IM_COL32(255, 255, 255, 42));
+        if (selected) dl->AddRect(a, b, IM_COL32(112, 204, 255, 255), 0, 0, 2.0f * scale);
+        if (shader && i == 2 && parameterCount > 0) { dl->AddLine(ImVec2(a.x + 8.0f * scale, y + rowH * 0.5f), ImVec2(b.x - 8.0f * scale, y + rowH * 0.5f), IM_COL32(112, 204, 255, 255), 1.0f); continue; }
+        if (shader && i >= 3) {
+            const GBAStationSlang::Parameter &param = m_shaderPreset.parameters[i - 3]; char value[32]; std::snprintf(value, sizeof(value), "%g", param.value);
+            dl->AddText(font, 20.0f * scale, ImVec2(a.x + 18.0f * scale, y + 16.0f * scale), selected ? IM_COL32(240,247,255,255) : IM_COL32(184,204,224,220), param.label.c_str());
+            if (param.editable) {
+                char iconL[8], iconR[8]; EncodeUtf8(iconL, 0xE0E4); EncodeUtf8(iconR, 0xE0E5);
+                dl->AddText(font, 21.0f * scale, ImVec2(b.x - 150.0f * scale, y + 15.0f * scale), IM_COL32(112,204,255,255), iconL);
+                dl->AddText(font, 20.0f * scale, ImVec2(b.x - 108.0f * scale, y + 16.0f * scale), IM_COL32(112,204,255,255), value);
+                dl->AddText(font, 21.0f * scale, ImVec2(b.x - 38.0f * scale, y + 15.0f * scale), IM_COL32(112,204,255,255), iconR);
+            } else {
+                dl->AddText(font, 18.0f * scale, ImVec2(b.x - 110.0f * scale, y + 17.0f * scale), IM_COL32(184,204,224,180), tr("固定").c_str());
+            }
+            continue;
+        }
+        const bool enabled = shader ? m_shaderEnabled : m_maskEnabled; const std::string &path = shader ? m_shaderPath : m_maskPath;
+        const std::string label = i == 0 ? (shader ? tr("着色器开关") : tr("遮罩开关")) : (shader ? tr("着色器路径选择") : tr("遮罩路径选择"));
+        const std::string value = i == 0 ? (enabled ? tr("开") : tr("关")) : (path.empty() ? tr("未选择") : PickerFileName(path));
+        dl->AddText(font, 20.0f * scale, ImVec2(a.x + 18.0f * scale, y + 16.0f * scale), selected ? IM_COL32(240,247,255,255) : IM_COL32(184,204,224,220), label.c_str());
+        const ImVec2 size = font->CalcTextSizeA(20.0f * scale, FLT_MAX, 0.0f, value.c_str()); dl->AddText(font, 20.0f * scale, ImVec2(b.x - 18.0f * scale - size.x, y + 16.0f * scale), enabled ? IM_COL32(112,204,255,255) : IM_COL32(184,204,224,220), value.c_str());
     }
 }
 
@@ -3737,7 +3800,7 @@ void GBAStationOverlay::ApplyScalingSettings(bool save)
 }
 
 void GBAStationOverlay::SetGameDisplaySettings(int displayMode, const std::string &screenLayout,
-                                                const std::string &internalResolution)
+                                                const std::string &internalResolution, int integerScale)
 {
     if (displayMode == static_cast<int>(FlycastDisplayMode::Integer))
         m_displayMode = FlycastDisplayMode::Integer;
@@ -3754,6 +3817,10 @@ void GBAStationOverlay::SetGameDisplaySettings(int displayMode, const std::strin
     else if (screenLayout == "4x") m_displaySize = FlycastDisplaySize::_4x;
     else if (screenLayout == "5x") m_displaySize = FlycastDisplaySize::_5x;
     else if (screenLayout == "Auto") m_displaySize = FlycastDisplaySize::Auto;
+
+    if (m_displayMode == FlycastDisplayMode::Integer && integerScale >= 1 && integerScale <= 5 &&
+        (screenLayout.empty() || screenLayout == "4:3" || screenLayout == "Auto"))
+        m_displaySize = static_cast<FlycastDisplaySize>(integerScale + 3);
 
     if (m_displayMode == FlycastDisplayMode::Integer &&
         static_cast<int>(m_displaySize) < static_cast<int>(FlycastDisplaySize::_1x))
@@ -3776,7 +3843,9 @@ void GBAStationOverlay::SetMaskSettings(bool enabled, const std::string &path)
     ReloadMaskTexture();
 }
 
-void GBAStationOverlay::SetShaderSettings(bool enabled, const std::string &path)
+void GBAStationOverlay::SetShaderSettings(bool enabled, const std::string &path,
+                                          const std::vector<std::string> &names,
+                                          const std::vector<float> &values)
 {
     m_shaderEnabled = enabled;
     if (m_shaderPath == path && (!enabled || m_shaderPresetValid))
@@ -3796,6 +3865,10 @@ void GBAStationOverlay::SetShaderSettings(bool enabled, const std::string &path)
         LOG_WARN("SLANG", "Unable to load saved preset '%s': %s", path.c_str(), error.c_str());
         return;
     }
+    for (size_t valueIndex = 0; valueIndex < names.size() && valueIndex < values.size(); ++valueIndex)
+        for (GBAStationSlang::Parameter &parameter : m_shaderPreset.parameters)
+            if (parameter.id == names[valueIndex])
+                parameter.value = std::clamp(values[valueIndex], parameter.minimum, parameter.maximum);
     m_shaderPresetValid = true;
 }
 
@@ -3846,6 +3919,14 @@ const char *GBAStationOverlay::GetGameScreenLayout() const
     case FlycastDisplaySize::_5x: return "5x";
     default: return "Auto";
     }
+}
+
+int GBAStationOverlay::GetGameIntegerScale() const
+{
+    if (m_displayMode != FlycastDisplayMode::Integer)
+        return 0;
+    const int scale = static_cast<int>(m_displaySize) - static_cast<int>(FlycastDisplaySize::_1x) + 1;
+    return std::clamp(scale, 1, 5);
 }
 
 // Helper to load SVG
